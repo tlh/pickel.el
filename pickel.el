@@ -27,8 +27,10 @@
 ;;; Commentary:
 ;;
 ;;  Pickel can serialize and deserialize most elisp objects, including
-;;  any combination of conses, vectors, structs, hash-tables, strings,
-;;  numbers and symbols.
+;;  any combination of lists (conses and nil), vectors, structs,
+;;  hash-tables, strings, numbers and symbols.  It can't serialize
+;;  functions, subroutines or opaque C types like
+;;  window-configurations.
 ;;
 ;;  Pickel correctly detects cycles in the object graph, so when two
 ;;  components of an object are `eq', they will be equal after
@@ -204,9 +206,9 @@ Only objects which need special `eq' treatment are added."
   (let (bindings)
     (flet ((inner
             (obj)
-            (unless (pickel-simple-type-p obj)
-              (unless (pickel-assoq obj bindings)
-                (push (cons obj (gensym)) bindings))
+            (unless (or (pickel-simple-type-p obj)
+                        (pickel-assoq obj bindings))
+              (push (cons obj (gensym)) bindings)
               (typecase obj
                 (cons
                  (inner (car obj))
