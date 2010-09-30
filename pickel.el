@@ -130,10 +130,6 @@
 
 ;;; utils
 
-(defun pickel-assoq (obj lst)
-  "Like assoc, but tests with `eq'."
-  (some (lambda (elt) (and (eq (car elt) obj) elt)) lst))
-
 (defmacro pickel-dohash (bindings &rest body)
   "Prettify maphash."
   (declare (indent defun))
@@ -145,25 +141,25 @@
 
 (defun pickel-simple-type-p (obj)
   "Return t if OBJ doesn't need special `eq' treatment."
-  (typecase obj
-    (number t)
-    (symbol t)
-    (t      nil)))
+  (typecase obj (number t) (symbol t) (t nil)))
 
 
 ;;; generate bindings
 
 (defun pickel-generate-bindings (obj)
   "Return alist mapping unique subobjects of OBJ to symbols.
-Only objects which need special `eq' treatment are added."
-  (let ((idx -1) bindings)
+Only objects which need special `eq' treatment are added.  Since
+this function sees every subobject of OBJ, it is also used to
+flag which sets of constructor functions to include in the
+pickeled object."
+  (let ((bindings (make-hash-table :test 'eq)) (i -1))
     (flet ((inner
             (obj)
             (unless (or (pickel-simple-type-p obj)
-                        (pickel-assoq obj bindings))
-              (push (cons obj (make-symbol (format "p%s" (incf idx))))
-                    bindings)
-              (typecase obj
+                        (gethash obj bindings))
+              (puthash obj (intern (format "p%s" (incf i))) bindings)
+              (etypecase obj
+                (string)
                 (cons
                  (setq cons t)
                  (inner (car obj))
@@ -184,20 +180,20 @@ Only objects which need special `eq' treatment are added."
 ;;; object construction
 
 (defun pickel-print-constructor-fns (type)
-  "Print TYPE's constructor functions from
+  "`princ' TYPE's constructor functions from
 pickel-minimized-functions."
   (mapc 'princ (cdr (assoc type pickel-minimized-functions))))
 
 (defun pickel-print-simple (obj)
-  "Return t if OBJ doesn't require a constructor."
-  (typecase obj
-    (number     (prin1 obj))
-    (null       (prin1 obj))
-    (symbol     (princ (format "'%s" obj)))))
+  "`princ' the simple types."
+  (etypecase obj
+    (number (princ obj))
+    (null   (princ obj))
+    (symbol (princ (format "'%s" obj)))))
 
 (defun pickel-print-constructor (obj)
   "Print OBJ's type's constructor."
-  (typecase obj
+  (etypecase obj
     (string     (prin1 obj))
     (cons       (princ "(c nil nil)"))
     (vector     (princ (format "(v %s nil)" (length obj))))
@@ -206,14 +202,13 @@ pickel-minimized-functions."
                                (hash-table-size obj)
                                (hash-table-rehash-size obj)
                                (hash-table-rehash-threshold obj)
-                               (hash-table-weakness obj))))
-    (t (error "Can't pickel type: %S" (type-of obj)))))
+                               (hash-table-weakness obj))))))
 
 (defun pickel-print-obj (obj)
   "Print OBJ if it's simple.  Otherwise print OBJ's binding."
   (if (pickel-simple-type-p obj)
       (pickel-print-simple obj)
-    (princ (cdr (pickel-assoq obj bindings)))))
+    (princ (gethash obj bindings))))
 
 
 ;;; object linking
@@ -263,13 +258,13 @@ pickel-minimized-functions."
     (when vector     (pickel-print-constructor-fns 'vector))
     (when hash-table (pickel-print-constructor-fns 'hash-table))
     (princ ")(let (")
-    (dolist (binding bindings)
-      (princ (format "(%s " (cdr binding)))
-      (pickel-print-constructor (car binding))
+    (pickel-dohash (obj sym bindings)
+      (princ (format "(%s " sym))
+      (pickel-print-constructor obj)
       (princ ")"))
     (princ ")")
-    (dolist (binding bindings)
-      (pickel-link-objects (car binding) (cdr binding)))
+    (pickel-dohash (obj sym bindings)
+      (pickel-link-objects obj sym))
     (pickel-print-obj obj)
     (princ "))")))
 
