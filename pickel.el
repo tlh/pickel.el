@@ -32,28 +32,26 @@
 ;;  functions, subroutines or opaque C types like
 ;;  window-configurations.
 ;;
-;;  Pickel correctly detects cycles in the object graph.  So for
-;;  instance, when a list points to itself:
+;;  Pickel correctly detects cycles in the object graph.  Take for
+;;  instance a list that points to itself:
 ;;
-;;    (let* ((foo (list nil))
-;;           (bar (list foo)))
-;;      (setcar foo bar)
-;;      bar)
+;;    (let ((foo (list nil)))
+;;      (setcar foo foo)
+;;      foo) ;; <- evaluate this
 ;;
-;;    => ((#0))
+;;    => (#0)
 ;;
-;;  In the above, the car of foo is bar, and the car of bar is foo.
-;;  Now, if we pickel bar to the current buffer, then evaluate the
-;;  pickeled code, we get the same thing:
+;;  In the above, the car of foo is set to foo.  Now if we pickel foo
+;;  to the current buffer, then evaluate the code it produces, we get
+;;  the same thing:
 ;;
-;;    (let* ((foo (list nil))
-;;           (bar (list foo)))
-;;      (setcar foo bar)
-;;      (pickel bar (current-buffer)))
+;;    (let ((foo (list nil)))
+;;      (setcar foo foo)
+;;      (pickel foo (current-buffer))) ;; <- evaluate this
 ;;
-;;    ( ... pickled object here ... )
+;;    => ( ... pickled object here ... ) ;; <- evaluate this
 ;;
-;;    => ((#0))
+;;    => (#0)
 ;;
 ;;  When two components of an object are `eq', they will be equal
 ;;  after unpickeling as well:
@@ -62,29 +60,49 @@
 ;;           (baz (list foo foo)))
 ;;      (pickel baz (current-buffer)))
 ;;
-;;  (let ((quux ( ... pickeled object here ... )))
-;;    (eq (car quux) (cadr quux)))
+;;  => ( ... pickled object here ... )
+;;
+;; (let ((quux ( ... pickeled object here ... )))
+;;    (eq (car quux) (cadr quux))) ;; <- evaluate this
 ;;
 ;;  => t
-;;
-;;  To pickel an object:
-;;
-;;    (pickel obj stream)
-;;
-;;  And to unpickel an object:
-;;
-;;    (unpickel stream)
 ;;
 
 ;;; Installation:
 ;;
-;;  - put `pickel.el' on your load path
-;;
-;;  - add this line to your `.emacs' file:
-;;
-;;    (require 'pickel)
+;;  - put `pickel.el' on your load path and (require 'pickel) where
+;;    you want to use it.
 ;;
 
+;;; Usage:
+;;
+;;  To pickel an object to `standard-output':
+;;
+;;    (pickel obj)
+;;
+;;  To pickel an object to STREAM
+;;
+;;    (pickel obj stream)
+;;
+;;  To unpickel an object from `standard-input':
+;;
+;;    (unpickel)
+;;
+;;  And to unpickel an object from STREAM:
+;;
+;;    (unpickel stream)
+;;
+;;  Two functions are included for working directly with files:
+;;
+;;    (pickel-to-file obj "/path/to/file")
+;;
+;;    (unpickel-file "/path/to/file")
+;;
+
+;;; TODO:
+;;
+;;  - Add serialization of propertized strings
+;;
 
 ;;; Code:
 
@@ -109,6 +127,7 @@
   "Smaller versions of object construction functions to minimize
   pickled object size.")
 
+
 ;;; utils
 
 (defun pickel-assoq (obj lst)
@@ -129,13 +148,12 @@
   (typecase obj
     (number t)
     (symbol t)
-    (null   t)
     (t      nil)))
 
 
 ;;; generate bindings
 
-(defun pickel-bindings (obj)
+(defun pickel-generate-bindings (obj)
   "Return alist mapping unique subobjects of OBJ to symbols.
 Only objects which need special `eq' treatment are added."
   (let ((idx -1) bindings)
@@ -163,7 +181,7 @@ Only objects which need special `eq' treatment are added."
       bindings)))
 
 
-;;; construction
+;;; object construction
 
 (defun pickel-print-constructor-fns (type)
   "Print TYPE's constructor functions from
@@ -174,7 +192,6 @@ pickel-minimized-functions."
   "Return t if OBJ doesn't require a constructor."
   (typecase obj
     (number     (prin1 obj))
-    (string     (prin1 obj))
     (null       (prin1 obj))
     (symbol     (princ (format "'%s" obj)))))
 
@@ -199,7 +216,7 @@ pickel-minimized-functions."
     (princ (cdr (pickel-assoq obj bindings)))))
 
 
-;;; linking
+;;; object linking
 
 (defun pickel-link-cons (cons sym)
   "Set the car and cdr of SYM to the car and cdr of CONS."
@@ -234,13 +251,13 @@ pickel-minimized-functions."
     (hash-table (pickel-link-hash-table obj sym))))
 
 
-;;; interface
+;;; pickel interface
 
 (defun pickel (obj &optional stream)
   "Pickel OBJ to STREAM or `standard-output'."
   (let* ((standard-output (or stream standard-output))
          cons vector hash-table
-         (bindings (pickel-bindings obj)))
+         (bindings (pickel-generate-bindings obj)))
     (princ "(flet(")
     (when cons       (pickel-print-constructor-fns 'cons))
     (when vector     (pickel-print-constructor-fns 'vector))
