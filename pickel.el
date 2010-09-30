@@ -112,15 +112,18 @@
 
 ;;; defvars
 
+(defvar pickel-identifier '--pickel--
+  "Symbol that identifies a stream as a pickeled object.")
+
 (defvar pickel-minimized-functions
-  '((cons
+  '((cons-fns
      . ("(c(a d)(cons a d))"
         "(sa(c a)(setcar c a))"
         "(sd(c d)(setcdr c d))"))
-    (vector
+    (vector-fns
      . ("(v(l i)(make-vector l i))"
         "(a(v i e)(aset v i e))"))
-    (hash-table
+    (hash-table-fns
      . ("(mht(ts sz rs rt w)(make-hash-table :test ts :size sz \
 :rehash-size rs :rehash-threshold rt :weakness w))"
         "(p(k v ht)(puthash k v ht))")))
@@ -152,7 +155,7 @@ Only objects which need special `eq' treatment are added.  Since
 this function sees every subobject of OBJ, it is also used to
 flag which sets of constructor functions to include in the
 pickeled object."
-  (let ((bindings (make-hash-table :test 'eq)) (i -1))
+  (let ((bindings (make-hash-table)) (i -1))
     (flet ((inner
             (obj)
             (unless (or (pickel-simple-type-p obj)
@@ -161,15 +164,15 @@ pickeled object."
               (etypecase obj
                 (string)
                 (cons
-                 (setq cons t)
+                 (setq cons-flag t)
                  (inner (car obj))
                  (inner (cdr obj)))
                 (vector
-                 (setq vector t)
+                 (setq vector-flag t)
                  (dotimes (idx (length obj))
                    (inner (aref obj idx))))
                 (hash-table
-                 (setq hash-table t)
+                 (setq hash-table-flag t)
                  (pickel-dohash (key val obj)
                    (inner key)
                    (inner val)))))))
@@ -179,7 +182,7 @@ pickeled object."
 
 ;;; object construction
 
-(defun pickel-print-constructor-fns (type)
+(defun pickel-print-fns (type)
   "`princ' TYPE's constructor functions from
 pickel-minimized-functions."
   (mapc 'princ (cdr (assoc type pickel-minimized-functions))))
@@ -251,13 +254,16 @@ pickel-minimized-functions."
 (defun pickel (obj &optional stream)
   "Pickel OBJ to STREAM or `standard-output'."
   (let* ((standard-output (or stream standard-output))
-         cons vector hash-table
+         cons-flag vector-flag hash-table-flag
          (bindings (pickel-generate-bindings obj)))
-    (princ (format "(progn '%s (flet(" '--pickel--))
-    (when cons       (pickel-print-constructor-fns 'cons))
-    (when vector     (pickel-print-constructor-fns 'vector))
-    (when hash-table (pickel-print-constructor-fns 'hash-table))
-    (princ ")(let (")
+    (princ (format "(progn '%s(flet(" pickel-identifier))
+    (when cons-flag
+      (pickel-print-fns 'cons-fns))
+    (when vector-flag
+      (pickel-print-fns 'vector-fns))
+    (when hash-table-flag
+      (pickel-print-fns 'hash-table-fns))
+    (princ ")(let(")
     (pickel-dohash (obj sym bindings)
       (princ (format "(%s " sym))
       (pickel-print-constructor obj)
@@ -274,7 +280,7 @@ Errors are thrown if the stream isn't a pickeled object, or if
 there's an error evaluating the expression."
   (let* ((stream (or stream standard-input))
          (expr (read stream)))
-    (unless (and (consp expr) (equal '(quote --pickel--) (cadr expr)))
+    (unless (and (consp expr) (equal `(quote ,pickel-identifier) (cadr expr)))
       (error "Attempt to unpickel a non-pickeled stream."))
     (condition-case err
         (eval expr)
