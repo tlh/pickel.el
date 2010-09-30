@@ -253,7 +253,7 @@ pickel-minimized-functions."
   (let* ((standard-output (or stream standard-output))
          cons vector hash-table
          (bindings (pickel-generate-bindings obj)))
-    (princ "(flet(")
+    (princ (format "(progn '%s (flet(" '--pickel--))
     (when cons       (pickel-print-constructor-fns 'cons))
     (when vector     (pickel-print-constructor-fns 'vector))
     (when hash-table (pickel-print-constructor-fns 'hash-table))
@@ -266,12 +266,19 @@ pickel-minimized-functions."
     (pickel-dohash (obj sym bindings)
       (pickel-link-objects obj sym))
     (pickel-print-obj obj)
-    (princ "))")))
+    (princ ")))")))
 
 (defun unpickel (&optional stream)
-  "Depickel and return an object from STREAM or
-`standard-input'."
-  (eval (read (or stream standard-input))))
+  "Unpickel an object from STREAM or `standard-input'.
+Errors are thrown if the stream isn't a pickeled object, or if
+there's an error evaluating the expression."
+  (let* ((stream (or stream standard-input))
+         (expr (read stream)))
+    (unless (and (consp expr) (equal '(quote --pickel--) (cadr expr)))
+      (error "Attempt to unpickel a non-pickeled stream."))
+    (condition-case err
+        (eval expr)
+      (error (error "Error unpickeling %s: %s" stream err)))))
 
 (defun pickel-to-file (obj file)
   "Pickel OBJ directly to FILE."
