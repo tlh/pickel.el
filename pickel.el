@@ -27,9 +27,9 @@
 ;;; Commentary:
 ;;
 ;;  Pickel can serialize and deserialize most elisp objects, including
-;;  any combination of lists (conses and nil), vectors, structs,
-;;  hash-tables, strings, numbers and symbols.  It can't serialize
-;;  functions, subroutines or opaque C types like
+;;  any combination of lists (conses), vectors, hash-tables, strings,
+;;  integers, floats, symbols and structs (vectors).  It can't
+;;  serialize functions, subrs (subroutines) or opaque C types like
 ;;  window-configurations.
 ;;
 ;;  Pickel correctly detects cycles in the object graph.  Take for
@@ -53,8 +53,10 @@
 ;;
 ;;    => (#0)
 ;;
-;;  When two components of an object are `eq', they will be equal
-;;  after unpickeling as well:
+;;  Pickel also correctly deals with `eq' subobjects, including
+;;  floats, strings, symbols and the collection types.  When two
+;;  subobjects of an object are `eq', they will be equal after
+;;  unpickeling as well:
 ;;
 ;;    (let* ((foo "bar")
 ;;           (baz (list foo foo)))
@@ -62,8 +64,8 @@
 ;;
 ;;  => ( ... pickled object here ... )
 ;;
-;; (let ((quux ( ... pickeled object here ... )))
-;;    (eq (car quux) (cadr quux))) ;; <- evaluate this
+;;    (let ((quux ( ... pickeled object here ... )))
+;;      (eq (car quux) (cadr quux))) ;; <- evaluate this
 ;;
 ;;  => t
 ;;
@@ -112,8 +114,12 @@
 
 ;;; defvars
 
-(defvar pickel-identifier '--pickel--
+(defvar pickel-identifier '--pickeled!--
   "Symbol that identifies a stream as a pickeled object.")
+
+(defvar pickel-pickelable-types
+  '(integer float symbol string cons vector hash-table)
+  "Types that pickel can serialize.")
 
 (defvar pickel-minimized-functions
   '((cons-fns
@@ -142,10 +148,6 @@
        (maphash (lambda (,key ,val) ,@body) ,table)
        ,ret)))
 
-(defun pickel-simple-type-p (obj)
-  "Return t if OBJ doesn't need special `eq' treatment."
-  (typecase obj (number t) (symbol t) (t nil)))
-
 
 ;;; generate bindings
 
@@ -155,14 +157,15 @@ Only objects which need special `eq' treatment are added.  Since
 this function sees every subobject of OBJ, it is also used to
 flag which sets of constructor functions to include in the
 pickeled object."
-  (let ((bindings (make-hash-table)) (i -1))
+  (let ((bindings (make-hash-table :test 'eq)) (i -1))
     (flet ((inner
             (obj)
-            (unless (or (pickel-simple-type-p obj)
+            (unless (member (type-of obj) pickel-pickelable-types)
+              (error "Pickel can't serialize objects of type %s" (type-of obj)))
+            (unless (or (integerp obj)
                         (gethash obj bindings))
               (puthash obj (intern (format "p%s" (incf i))) bindings)
-              (etypecase obj
-                (string)
+              (typecase obj
                 (cons
                  (setq cons-flag t)
                  (inner (car obj))
@@ -187,16 +190,12 @@ pickeled object."
 pickel-minimized-functions."
   (mapc 'princ (cdr (assoc type pickel-minimized-functions))))
 
-(defun pickel-print-simple (obj)
-  "`princ' the simple types."
-  (etypecase obj
-    (number (princ obj))
-    (null   (princ obj))
-    (symbol (princ (format "'%s" obj)))))
-
 (defun pickel-print-constructor (obj)
   "Print OBJ's type's constructor."
   (etypecase obj
+    (null       (princ obj))
+    (float      (princ obj))
+    (symbol     (princ (format "'%s" obj)))
     (string     (prin1 obj))
     (cons       (princ "(c nil nil)"))
     (vector     (princ (format "(v %s nil)" (length obj))))
@@ -208,9 +207,9 @@ pickel-minimized-functions."
                                (hash-table-weakness obj))))))
 
 (defun pickel-print-obj (obj)
-  "Print OBJ if it's simple.  Otherwise print OBJ's binding."
-  (if (pickel-simple-type-p obj)
-      (pickel-print-simple obj)
+  "Print OBJ if it's an integer, its binding otherwise."
+  (if (integerp obj)
+      (princ obj)
     (princ (gethash obj bindings))))
 
 
@@ -242,11 +241,11 @@ pickel-minimized-functions."
 
 (defun pickel-link-objects (obj sym)
   "Dispatch to OBJ and SYM's apropriate link function."
-  (etypecase obj
-    (string     nil)
+  (typecase obj
     (cons       (pickel-link-cons       obj sym))
     (vector     (pickel-link-vector     obj sym))
-    (hash-table (pickel-link-hash-table obj sym))))
+    (hash-table (pickel-link-hash-table obj sym))
+    (t nil)))
 
 
 ;;; pickel interface
