@@ -32,8 +32,8 @@
 ;;  serialize functions, subrs (subroutines) or opaque C types like
 ;;  window-configurations.
 ;;
-;;  Pickel correctly detects cycles in the object graph.  Take for
-;;  instance a list that points to itself:
+;;  Pickel correctly reconstructs cycles in the object graph.  Take
+;;  for instance a list that points to itself:
 ;;
 ;;    (let ((foo (list nil)))
 ;;      (setcar foo foo)
@@ -55,7 +55,7 @@
 ;;
 ;;  Pickel also correctly deals with `eq' subobjects, including
 ;;  floats, strings, symbols and the collection types.  When two
-;;  subobjects of an object are `eq', they will be equal after
+;;  subobjects of an object are `eq', they will be `eq' after
 ;;  unpickeling as well:
 ;;
 ;;    (let* ((foo "bar")
@@ -162,7 +162,7 @@
       (integerp obj)))
 
 (defun pickel-generate-bindings (obj)
-  "Return alist mapping unique subobjects of OBJ to symbols.
+  "Return a hash table mapping unique subobjects of OBJ to symbols.
 Only objects which need special `eq' treatment are added.  Since
 this function sees every subobject of OBJ, it is also used to
 flag which sets of constructor functions to include in the
