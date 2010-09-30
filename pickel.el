@@ -103,7 +103,9 @@
 
 ;;; TODO:
 ;;
-;;  - Add serialization of propertized strings
+;;  - Add types: char-tables
+;;  - Add serialization of symbol plists?
+;;  - Add serialization of string properties?
 ;;
 
 ;;; Code:
@@ -122,7 +124,9 @@
   "Types that pickel can serialize.")
 
 (defvar pickel-minimized-functions
-  '((cons-fns
+  '((symbol-fns
+     . ("(ms(s)(make-symbol s))"))
+    (cons-fns
      . ("(c(a d)(cons a d))"
         "(sa(c a)(setcar c a))"
         "(sd(c d)(setcdr c d))"))
@@ -151,6 +155,12 @@
 
 ;;; generate bindings
 
+(defun pickel-no-bind-p (obj)
+  "Return t for objects that shouldn't get a binding."
+  (or (eq obj t)
+      (eq obj nil)
+      (integerp obj)))
+
 (defun pickel-generate-bindings (obj)
   "Return alist mapping unique subobjects of OBJ to symbols.
 Only objects which need special `eq' treatment are added.  Since
@@ -162,10 +172,12 @@ pickeled object."
             (obj)
             (unless (member (type-of obj) pickel-pickelable-types)
               (error "Pickel can't serialize objects of type %s" (type-of obj)))
-            (unless (or (integerp obj)
-                        (gethash obj bindings))
+            (unless (or (pickel-no-bind-p obj) (gethash obj bindings))
               (puthash obj (intern (format "p%s" (incf i))) bindings)
+              (setq bindings-flag t)
               (typecase obj
+                (symbol
+                 (setq symbol-flag t))
                 (cons
                  (setq cons-flag t)
                  (inner (car obj))
@@ -193,9 +205,8 @@ pickel-minimized-functions."
 (defun pickel-print-constructor (obj)
   "Print OBJ's type's constructor."
   (etypecase obj
-    (null       (princ obj))
     (float      (princ obj))
-    (symbol     (princ (format "'%s" obj)))
+    (symbol     (princ (format "(ms %S)" (symbol-name obj))))
     (string     (prin1 obj))
     (cons       (princ "(c nil nil)"))
     (vector     (princ (format "(v %s nil)" (length obj))))
@@ -208,9 +219,7 @@ pickel-minimized-functions."
 
 (defun pickel-print-obj (obj)
   "Print OBJ if it's an integer, its binding otherwise."
-  (if (integerp obj)
-      (princ obj)
-    (princ (gethash obj bindings))))
+  (princ (or (gethash obj bindings) obj)))
 
 
 ;;; object linking
@@ -253,25 +262,36 @@ pickel-minimized-functions."
 (defun pickel (obj &optional stream)
   "Pickel OBJ to STREAM or `standard-output'."
   (let* ((standard-output (or stream standard-output))
-         cons-flag vector-flag hash-table-flag
+         symbol-flag cons-flag vector-flag
+         hash-table-flag bindings-flag
          (bindings (pickel-generate-bindings obj)))
-    (princ (format "(progn '%s(flet(" pickel-identifier))
-    (when cons-flag
-      (pickel-print-fns 'cons-fns))
-    (when vector-flag
-      (pickel-print-fns 'vector-fns))
-    (when hash-table-flag
-      (pickel-print-fns 'hash-table-fns))
-    (princ ")(let(")
-    (pickel-dohash (obj sym bindings)
-      (princ (format "(%s " sym))
-      (pickel-print-constructor obj)
+    (princ (format "(progn '%s " pickel-identifier))
+    (when (or symbol-flag cons-flag vector-flag hash-table-flag)
+      (princ "(flet(")
+      (when symbol-flag
+        (pickel-print-fns 'symbol-fns))
+      (when cons-flag
+        (pickel-print-fns 'cons-fns))
+      (when vector-flag
+        (pickel-print-fns 'vector-fns))
+      (when hash-table-flag
+        (pickel-print-fns 'hash-table-fns))
       (princ ")"))
-    (princ ")")
-    (pickel-dohash (obj sym bindings)
-      (pickel-link-objects obj sym))
+    (when bindings-flag
+      (princ "(let(")
+      (pickel-dohash (obj sym bindings)
+        (princ (format "(%s " sym))
+        (pickel-print-constructor obj)
+        (princ ")"))
+      (princ ")")
+      (pickel-dohash (obj sym bindings)
+        (pickel-link-objects obj sym)))
     (pickel-print-obj obj)
-    (princ ")))")))
+    (when bindings-flag
+      (princ ")"))
+    (when (or symbol-flag cons-flag vector-flag hash-table-flag)
+      (princ ")"))
+    (princ ")")))
 
 (defun unpickel (&optional stream)
   "Unpickel an object from STREAM or `standard-input'.
