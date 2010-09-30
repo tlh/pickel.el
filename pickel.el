@@ -5,7 +5,7 @@
 ;; File:      pickel.el
 ;; Author:    tlh <thunkout@gmail.com>
 ;; Created:   2010-09-29
-;; Version:   0.71
+;; Version:   1.0
 ;; Keywords:  object serialization
 ;;
 ;; This program is free software; you can redistribute it and/or
@@ -56,7 +56,7 @@
 ;;    => ((#0))
 ;;
 ;;  When two components of an object are `eq', they will be equal
-;;  after deserialization as well:
+;;  after unpickeling as well:
 ;;
 ;;    (let* ((foo "bar")
 ;;           (baz (list foo foo)))
@@ -95,17 +95,19 @@
 ;;; defvars
 
 (defvar pickel-minimized-functions
-  '("(m(s)(makunbound s))"
-    "(c(a d)(cons a d))"
-    "(sa(c a)(setcar c a))"
-    "(sd(c d)(setcdr c d))"
-    "(v(l i)(make-vector l i))"
-    "(mht(&rest a)(apply 'make-hash-table a))"
-    "(p(k v ht)(puthash k v ht))"
-    "(a(v i e)(aset v i e))")
-  "Smaller versions of object constructors to minimize pickled
-  object size.")
-
+  '((cons
+     . ("(c(a d)(cons a d))"
+        "(sa(c a)(setcar c a))"
+        "(sd(c d)(setcdr c d))"))
+    (vector
+     . ("(v(l i)(make-vector l i))"
+        "(a(v i e)(aset v i e))"))
+    (hash-table
+     . ("(mht(ts sz rs rt w)(make-hash-table :test ts :size sz \
+:rehash-size rs :rehash-threshold rt :weakness w))"
+        "(p(k v ht)(puthash k v ht))")))
+  "Smaller versions of object construction functions to minimize
+  pickled object size.")
 
 ;;; utils
 
@@ -116,10 +118,11 @@
 (defmacro pickel-dohash (bindings &rest body)
   "Prettify maphash."
   (declare (indent defun))
-  (destructuring-bind (key val hash &optional return-form) bindings
+  (destructuring-bind (key val table &optional ret)
+      bindings
     `(progn
-       (maphash (lambda (,key ,val) ,@body) ,hash)
-       ,return-form)))
+       (maphash (lambda (,key ,val) ,@body) ,table)
+       ,ret)))
 
 (defun pickel-simple-type-p (obj)
   "Return t if OBJ doesn't need special `eq' treatment."
@@ -135,20 +138,24 @@
 (defun pickel-bindings (obj)
   "Return alist mapping unique subobjects of OBJ to symbols.
 Only objects which need special `eq' treatment are added."
-  (let (bindings)
+  (let ((idx -1) bindings)
     (flet ((inner
             (obj)
             (unless (or (pickel-simple-type-p obj)
                         (pickel-assoq obj bindings))
-              (push (cons obj (gensym)) bindings)
+              (push (cons obj (make-symbol (format "p%s" (incf idx))))
+                    bindings)
               (typecase obj
                 (cons
+                 (setq cons t)
                  (inner (car obj))
                  (inner (cdr obj)))
                 (vector
+                 (setq vector t)
                  (dotimes (idx (length obj))
                    (inner (aref obj idx))))
                 (hash-table
+                 (setq hash-table t)
                  (pickel-dohash (key val obj)
                    (inner key)
                    (inner val)))))))
@@ -157,6 +164,11 @@ Only objects which need special `eq' treatment are added."
 
 
 ;;; construction
+
+(defun pickel-print-constructor-fns (type)
+  "Print TYPE's constructor functions from
+pickel-minimized-functions."
+  (mapc 'princ (cdr (assoc type pickel-minimized-functions))))
 
 (defun pickel-print-simple (obj)
   "Return t if OBJ doesn't require a constructor."
@@ -172,14 +184,13 @@ Only objects which need special `eq' treatment are added."
     (string     (prin1 obj))
     (cons       (princ "(c nil nil)"))
     (vector     (princ (format "(v %s nil)" (length obj))))
-    (hash-table (princ (format "(mht :test '%S :size %S \
-:rehash-size %S :rehash-threshold %S :weakness %S)"
+    (hash-table (princ (format "(mht '%s %s %s %s %s)"
                                (hash-table-test obj)
                                (hash-table-size obj)
                                (hash-table-rehash-size obj)
                                (hash-table-rehash-threshold obj)
                                (hash-table-weakness obj))))
-    (t (error "Can't serialize type: %S" (type-of obj)))))
+    (t (error "Can't pickel type: %S" (type-of obj)))))
 
 (defun pickel-print-obj (obj)
   "Print OBJ if it's simple.  Otherwise print OBJ's binding."
@@ -227,10 +238,13 @@ Only objects which need special `eq' treatment are added."
 
 (defun pickel (obj &optional stream)
   "Pickel OBJ to STREAM or `standard-output'."
-  (let ((standard-output (or stream standard-output))
-        (bindings (pickel-bindings obj)))
+  (let* ((standard-output (or stream standard-output))
+         cons vector hash-table
+         (bindings (pickel-bindings obj)))
     (princ "(flet(")
-    (mapc 'princ pickel-minimized-functions)
+    (when cons       (pickel-print-constructor-fns 'cons))
+    (when vector     (pickel-print-constructor-fns 'vector))
+    (when hash-table (pickel-print-constructor-fns 'hash-table))
     (princ ")(let (")
     (dolist (binding bindings)
       (princ (format "(%s " (cdr binding)))
