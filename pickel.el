@@ -32,16 +32,40 @@
 ;;  functions, subroutines or opaque C types like
 ;;  window-configurations.
 ;;
-;;  Pickel correctly detects cycles in the object graph, so when two
-;;  components of an object are `eq', they will be equal after
-;;  deserialization as well:
+;;  Pickel correctly detects cycles in the object graph.  So for
+;;  instance, when a list points to itself:
+;;
+;;    (let* ((foo (list nil))
+;;           (bar (list foo)))
+;;      (setcar foo bar)
+;;      bar)
+;;
+;;    => ((#0))
+;;
+;;  In the above, the car of foo is bar, and the car of bar is foo.
+;;  Now, if we pickel bar to the current buffer, then evaluate the
+;;  pickeled code, we get the same thing:
+;;
+;;    (let* ((foo (list nil))
+;;           (bar (list foo)))
+;;      (setcar foo bar)
+;;      (pickel bar (current-buffer)))
+;;
+;;    ( ... pickled object here ... )
+;;
+;;    => ((#0))
+;;
+;;  When two components of an object are `eq', they will be equal
+;;  after deserialization as well:
 ;;
 ;;    (let* ((foo "bar")
 ;;           (baz (list foo foo)))
 ;;      (pickel baz (current-buffer)))
 ;;
-;;  (setq quux ( ... pickeled object here ... ))
-;;  (eq (car quux) (cadr quux)) => t
+;;  (let ((quux ( ... pickeled object here ... )))
+;;    (eq (car quux) (cadr quux)))
+;;
+;;  => t
 ;;
 ;;  To pickel an object:
 ;;
@@ -73,6 +97,8 @@
 (defvar pickel-minimized-functions
   '("(m(s)(makunbound s))"
     "(c(a d)(cons a d))"
+    "(sa(c a)(setcar c a))"
+    "(sd(c d)(setcdr c d))"
     "(v(l i)(make-vector l i))"
     "(mht(&rest a)(apply 'make-hash-table a))"
     "(p(k v ht)(puthash k v ht))"
@@ -95,9 +121,6 @@
        (maphash (lambda (,key ,val) ,@body) ,hash)
        ,return-form)))
 
-
-;;; predicates
-
 (defun pickel-simple-type-p (obj)
   "Return t if OBJ doesn't need special `eq' treatment."
   (typecase obj
@@ -106,99 +129,8 @@
     (null   t)
     (t      nil)))
 
-(defun pickel-pickeled-p (obj)
-  "Return t if OBJ has been pickeled, nil otherwise."
-  (or (pickel-simple-type-p obj)
-      (pickel-assoq obj pickeled)))
 
-(defun pickel-components-pickeled-p (obj)
-  "Return t if toplevel elts of OBJ have been pickeled."
-  (typecase obj
-    (string t)
-    (cons
-     (and (pickel-pickeled-p (car obj))
-          (pickel-pickeled-p (cdr obj))))
-    (vector
-     (catch 'result
-       (dotimes (idx (length obj) t)
-         (unless (pickel-pickeled-p (aref obj idx))
-           (throw 'result nil)))))
-    (hash-table
-     (catch 'result
-       (pickel-dohash (key val obj t)
-         (unless (and (pickel-pickeled-p key)
-                      (pickel-pickeled-p val))
-           (throw 'result nil)))))))
-
-
-;;; printing
-
-(defun pickel-print-pickeled (obj)
-  "If OBJ's type is simple, print it.
-If OBJ's type is composite, print the symbol it's bound to."
-  (if (pickel-simple-type-p obj)
-      (pickel-dispatch obj)
-    (princ (cdr (pickel-pickeled-p obj)))))
-
-(defun pickel-default (obj)
-  "Serialize OBJ with `prin1'."
-  (prin1 obj))
-
-(defun pickel-symbol (sym)
-  "Serialize symbol SYM."
-  (princ "'")
-  (princ sym))
-
-(defun pickel-cons (cons)
-  "Serialize CONS."
-  (princ "(c ")
-  (pickel-print-pickeled (car cons))
-  (princ " ")
-  (pickel-print-pickeled (cdr cons))
-  (princ ")"))
-
-(defun pickel-vector (vec)
-  "Serialize VEC."
-  (let ((len (length vec)))
-    (princ (format "(let((_ (v %s nil)))" len))
-    (dotimes (idx len)
-      (princ (format "(a _ %s " idx))
-      (pickel-print-pickeled (aref vec idx))
-      (princ ")"))
-    (princ "_)")))
-
-(defun pickel-hash-table (table)
-  "Serialize TABLE."
-  (princ (format "(let((_(mht \
-:test '%S :size %S :rehash-size %S \
-:rehash-threshold %S :weakness %S)))"
-                 (hash-table-test table)
-                 (hash-table-size table)
-                 (hash-table-rehash-size table)
-                 (hash-table-rehash-threshold table)
-                 (hash-table-weakness table)))
-  (pickel-dohash (key val table)
-    (princ "(p ")
-    (pickel-print-pickeled key)
-    (princ " ")
-    (pickel-print-pickeled val)
-    (princ " _)"))
-  (princ "_)"))
-
-(defun pickel-dispatch (obj)
-  "Serialize OBJ, dispatching on its type."
-  (typecase obj
-    (number     (pickel-default    obj))
-    (string     (pickel-default    obj))
-    (null       (pickel-default    obj))
-    (symbol     (pickel-symbol     obj))
-    (cons       (pickel-cons       obj))
-    (vector     (pickel-vector     obj))
-    (hash-table (pickel-hash-table obj))
-    (t (error "Can't serialize type: %S" (type-of obj)))))
-
-
-;;; object graph cycle detection
+;;; generate bindings
 
 (defun pickel-bindings (obj)
   "Return alist mapping unique subobjects of OBJ to symbols.
@@ -224,29 +156,90 @@ Only objects which need special `eq' treatment are added."
       bindings)))
 
 
+;;; construction
+
+(defun pickel-print-simple (obj)
+  "Return t if OBJ doesn't require a constructor."
+  (typecase obj
+    (number     (prin1 obj))
+    (string     (prin1 obj))
+    (null       (prin1 obj))
+    (symbol     (princ (format "'%s" obj)))))
+
+(defun pickel-print-constructor (obj)
+  "Print OBJ's type's constructor."
+  (typecase obj
+    (string     (prin1 obj))
+    (cons       (princ "(c nil nil)"))
+    (vector     (princ (format "(v %s nil)" (length obj))))
+    (hash-table (princ (format "(mht :test '%S :size %S \
+:rehash-size %S :rehash-threshold %S :weakness %S)"
+                               (hash-table-test obj)
+                               (hash-table-size obj)
+                               (hash-table-rehash-size obj)
+                               (hash-table-rehash-threshold obj)
+                               (hash-table-weakness obj))))
+    (t (error "Can't serialize type: %S" (type-of obj)))))
+
+(defun pickel-print-obj (obj)
+  "Print OBJ if it's simple.  Otherwise print OBJ's binding."
+  (if (pickel-simple-type-p obj)
+      (pickel-print-simple obj)
+    (princ (cdr (pickel-assoq obj bindings)))))
+
+
+;;; linking
+
+(defun pickel-link-cons (cons sym)
+  "Set the car and cdr of SYM to the car and cdr of CONS."
+  (princ (format "(sa %s " sym))
+  (pickel-print-obj (car cons))
+  (princ (format ")(sd %s " sym))
+  (pickel-print-obj (cdr cons))
+  (princ ")"))
+
+(defun pickel-link-vector (vec sym)
+  "Set the vector cells of SYM to the vector cells of VEC."
+  (dotimes (i (length vec))
+    (princ (format "(a %s %s " sym i))
+    (pickel-print-obj (aref vec i))
+    (princ ")")))
+
+(defun pickel-link-hash-table (table sym)
+  "Set the keys and vals of SYM to the keys and vals of TABLE."
+  (pickel-dohash (key val table)
+    (princ "(p ")
+    (pickel-print-obj key)
+    (princ " ")
+    (pickel-print-obj val)
+    (princ (format " %s)" sym))))
+
+(defun pickel-link-objects (obj sym)
+  "Dispatch to OBJ and SYM's apropriate link function."
+  (etypecase obj
+    (string     nil)
+    (cons       (pickel-link-cons       obj sym))
+    (vector     (pickel-link-vector     obj sym))
+    (hash-table (pickel-link-hash-table obj sym))))
+
+
 ;;; interface
 
 (defun pickel (obj &optional stream)
   "Pickel OBJ to STREAM or `standard-output'."
-  (let* ((standard-output (or stream standard-output))
-         (unpickeled (pickel-bindings obj))
-         (pickeled))
+  (let ((standard-output (or stream standard-output))
+        (bindings (pickel-bindings obj)))
     (princ "(flet(")
     (mapc 'princ pickel-minimized-functions)
+    (princ ")(let (")
+    (dolist (binding bindings)
+      (princ (format "(%s " (cdr binding)))
+      (pickel-print-constructor (car binding))
+      (princ ")"))
     (princ ")")
-    (while unpickeled
-      (dolist (binding unpickeled)
-        (destructuring-bind (obj . sym) binding
-          (when (pickel-components-pickeled-p obj)
-            (princ (format "(setq %s " (cdr binding)))
-            (pickel-dispatch (car binding))
-            (princ ")")
-            (push binding pickeled)
-            (setq unpickeled (remove binding unpickeled))))))
-    (princ "(prog1 ")
-    (pickel-print-pickeled obj)
-    (dolist (binding pickeled)
-      (princ (format "(m '%s)" (cdr binding))))
+    (dolist (binding bindings)
+      (pickel-link-objects (car binding) (cdr binding)))
+    (pickel-print-obj obj)
     (princ "))")))
 
 (defun unpickel (&optional stream)
