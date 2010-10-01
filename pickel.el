@@ -129,15 +129,15 @@
 
 (defvar pickel-minimized-functions
   '((symbol-fns
-     . ("(s(s)(make-symbol s))"
+     . ("(m(s)(make-symbol s))"
         "(i(s)(intern s))"))
     (cons-fns
      . ("(c(a d)(cons a d))"
-        "(r(c a)(setcar c a))"
+        "(a(c a)(setcar c a))"
         "(d(c d)(setcdr c d))"))
     (vector-fns
      . ("(v(l i)(make-vector l i))"
-        "(a(v i e)(aset v i e))"))
+        "(s(v i e)(aset v i e))"))
     (hash-table-fns
      . ("(h(ts sz rs rt w)(make-hash-table :test ts :size sz \
 :rehash-size rs :rehash-threshold rt :weakness w))"
@@ -157,12 +157,17 @@
        (maphash (lambda (,key ,val) ,@body) ,table)
        ,ret)))
 
-(defmacro pickel-wrap (prefix suffix &rest body)
-  "Wrap BODY in PREFIX and SUFFIX princers."
+(defmacro pickel-wrap? (prefix suffix on &rest body)
+  "Wrap BODY in PREFIX and SUFFIX when ON is non-nil."
   (declare (indent defun))
-  `(progn (princ ,prefix)
+  `(progn (and ,on (princ ,prefix))
           ,@body
-          (princ ,suffix)))
+          (and ,on (princ ,suffix))))
+
+(defmacro pickel-wrap (prefix suffix &rest body)
+  "Wrap BODY in PREFIX and SUFFIX."
+  (declare (indent defun))
+  `(pickel-wrap? ,prefix ,suffix t ,@body))
 
 
 ;;; generate bindings
@@ -174,7 +179,7 @@
       (integerp obj)))
 
 (defun pickel-mksym (idx)
-  "Return a base 52 symbol-name [a-zA-Z] from the IDX.
+  "Return IDX as a base 52 symbol-name [a-zA-Z].
 `t' and `nil' are reserved constants and can't be used, so append
 1 to them when they come up."
   (let ((q (/ idx 52)) (name ""))
@@ -196,40 +201,42 @@ Only objects which need special `eq' treatment are added.  Since
 this function sees every subobject of OBJ, it is also used to
 flag which sets of constructor functions to include in the
 pickeled object."
-  (let ((bindings (make-hash-table :test 'eq)) (idx -1))
+  (let ((bindings (make-hash-table :test 'eq))
+        (idx -1) (type (type-of obj)))
     (flet ((inner
             (obj)
-            (unless (member (type-of obj) pickel-pickelable-types)
-              (error "Pickel can't serialize objects of type %s" (type-of obj)))
+            (unless (member type pickel-pickelable-types)
+              (error "Pickel can't serialize objects of type %s" type))
             (unless (or (pickel-no-bind-p obj) (gethash obj bindings))
               (puthash obj (pickel-mksym (incf idx)) bindings)
-              (setq bindings-flag t)
               (typecase obj
-                (symbol
-                 (setq symbol-flag t))
                 (cons
-                 (setq cons-flag t)
                  (inner (car obj))
                  (inner (cdr obj)))
                 (vector
-                 (setq vector-flag t)
                  (dotimes (i (length obj))
                    (inner (aref obj i))))
                 (hash-table
-                 (setq hash-table-flag t)
                  (pickel-dohash (key val obj)
                    (inner key)
                    (inner val)))))))
       (inner obj)
       bindings)))
 
+(defun pickel-get-flags (bindings)
+  "Return an array flagging the types of objects in BINDINGS.
+Used to conditionally include type constructor functions."
+  (let ((flags (make-hash-table)))
+    (pickel-dohash (obj bind bindings flags)
+      (puthash :bindings t flags)
+      (typecase obj
+        (symbol     (puthash :symbol     t flags))
+        (cons       (puthash :cons       t flags))
+        (vector     (puthash :vector     t flags))
+        (hash-table (puthash :hash-table t flags))))))
+
 
 ;;; object construction
-
-(defun pickel-print-fns (type)
-  "`princ' TYPE's constructor functions from
-`pickel-minimized-functions'."
-  (mapc 'princ (cdr (assoc type pickel-minimized-functions))))
 
 (defun pickel-print-float-constructor (flt)
   "Print the constructor for FLT."
@@ -240,7 +247,7 @@ pickeled object."
 If obj is interned at pickel-time, re-intern it at
 depickel-time (i). If not, make an uninterned symbol (s)."
   (princ (format "(%s %S)"
-                 (if (intern-soft sym) "i" "s")
+                 (if (intern-soft sym) "i" "m")
                  (symbol-name sym))))
 
 (defun pickel-print-string-constructor (str)
@@ -279,12 +286,17 @@ All hash-table properties are set."
   "Print OBJ if it's an integer, its binding otherwise."
   (princ (or (gethash obj bindings) obj)))
 
+(defun pickel-print-fns (type)
+  "`princ' TYPE's constructor functions from
+`pickel-minimized-functions'."
+  (mapc 'princ (cdr (assoc type pickel-minimized-functions))))
+
 
 ;;; object linking
 
 (defun pickel-link-cons (cons sym)
   "Set the car and cdr of SYM to the car and cdr of CONS."
-  (pickel-wrap (format "(r %s " sym) ")"
+  (pickel-wrap (format "(a %s " sym) ")"
     (pickel-print-obj (car cons)))
   (pickel-wrap (format "(d %s " sym) ")"
     (pickel-print-obj (cdr cons))))
@@ -292,7 +304,7 @@ All hash-table properties are set."
 (defun pickel-link-vector (vec sym)
   "Set the vector cells of SYM to the vector cells of VEC."
   (dotimes (i (length vec))
-    (pickel-wrap (format "(a %s %s " sym i) ")"
+    (pickel-wrap (format "(s %s %s " sym i) ")"
       (pickel-print-obj (aref vec i)))))
 
 (defun pickel-link-hash-table (table sym)
@@ -303,13 +315,13 @@ All hash-table properties are set."
       (princ " ")
       (pickel-print-obj val))))
 
-(defun pickel-link-objects (obj sym)
+(defun pickel-link-objects (bindings)
   "Dispatch to OBJ's apropriate link function."
-  (typecase obj
-    (cons       (pickel-link-cons       obj sym))
-    (vector     (pickel-link-vector     obj sym))
-    (hash-table (pickel-link-hash-table obj sym))
-    (t nil)))
+  (pickel-dohash (obj sym bindings)
+    (typecase obj
+      (cons       (pickel-link-cons       obj sym))
+      (vector     (pickel-link-vector     obj sym))
+      (hash-table (pickel-link-hash-table obj sym)))))
 
 
 ;;; pickel interface
@@ -317,27 +329,27 @@ All hash-table properties are set."
 (defun pickel (obj &optional stream)
   "Pickel OBJ to STREAM or `standard-output'."
   (let* ((standard-output (or stream standard-output))
-         symbol-flag cons-flag vector-flag
-         hash-table-flag bindings-flag
-         (bindings (pickel-generate-bindings obj)))
-    (pickel-wrap (format "(progn '%s " pickel-identifier)
-      (pickel-wrap "(flet" ")"
-        (pickel-wrap "(" ")"
-          (when symbol-flag
+         (bindings (pickel-generate-bindings obj))
+         (flags (pickel-get-flags bindings))
+         (binds? (gethash :bindings flags)))
+    (pickel-wrap (format "(progn '%s " pickel-identifier) ")"
+      (pickel-wrap? "(flet" ")" binds?
+        (pickel-wrap? "(" ")" binds?
+          (when (gethash :symbol flags)
             (pickel-print-fns 'symbol-fns))
-          (when cons-flag
+          (when (gethash :cons flags)
             (pickel-print-fns 'cons-fns))
-          (when vector-flag
+          (when (gethash :vector flags)
             (pickel-print-fns 'vector-fns))
-          (when hash-table-flag
+          (when (gethash :hash-table flags)
             (pickel-print-fns 'hash-table-fns)))
-        (pickel-wrap "(let" ")"
-          (pickel-wrap "(" ")"
-            (pickel-dohash (obj sym bindings)
-              (pickel-wrap (format "(%s " sym) ")"
-                (pickel-print-constructor obj))))
-          (pickel-dohash (obj sym bindings)
-            (pickel-link-objects obj sym))
+        (pickel-wrap? "(let" ")" binds?
+          (pickel-wrap? "(" ")" binds?
+            (when binds?
+              (pickel-dohash (obj sym bindings)
+                (pickel-wrap (format "(%s " sym) ")"
+                  (pickel-print-constructor obj)))))
+          (pickel-link-objects bindings)
           (pickel-print-obj obj))))))
 
 (defun unpickel (&optional stream)
