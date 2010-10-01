@@ -26,13 +26,17 @@
 
 ;;; Commentary:
 ;;
-;;  Pickel can serialize and deserialize most elisp objects, including
-;;  any combination of lists (conses), vectors, hash-tables, strings,
-;;  integers, floats, symbols and structs (vectors).  It can't
-;;  serialize functions, subrs (subroutines) or opaque C types like
-;;  window-configurations.
+;;  pickel is an elisp object serialization package.  It can serialize
+;;  and deserialize most elisp objects, including any combination of
+;;  lists (conses), vectors, hash-tables, strings, integers, floats,
+;;  symbols and structs (vectors).  It can't serialize functions,
+;;  subrs (subroutines) or opaque C types like window-configurations.
 ;;
-;;  Pickel correctly reconstructs cycles in the object graph.  Take
+;;  pickel works by printing out elisp that evaluates to an object
+;;  "equal" to the object on which it's called.  So unpickeling an
+;;  object amounts to evaluating the pickeled object.
+;;
+;;  pickel correctly reconstructs cycles in the object graph.  Take
 ;;  for instance a list that points to itself:
 ;;
 ;;    (let ((foo (list nil)))
@@ -45,9 +49,9 @@
 ;;  to the current buffer, then evaluate the code it produces, we get
 ;;  the same thing:
 ;;
-;;    (let ((foo (list nil)))
+;;    (let ((foo '(bar)))
 ;;      (setcar foo foo)
-;;      (pickel foo (current-buffer))) ;; <- evaluate this
+;;      (pickel foo (current-buffer)))
 ;;
 ;;    => ( ... pickled object here ... ) ;; <- evaluate this
 ;;
@@ -58,13 +62,12 @@
 ;;  subobjects of an object are `eq', they will be `eq' after
 ;;  unpickeling as well:
 ;;
-;;    (let* ((foo "bar")
-;;           (baz (list foo foo)))
-;;      (pickel baz (current-buffer)))
+;;    (let ((foo "bar"))
+;;      (pickel (list foo foo) (current-buffer)))
 ;;
-;;  => ( ... pickled object here ... )
+;;  => ( ... pickled object ... )
 ;;
-;;    (let ((quux ( ... pickeled object here ... )))
+;;    (let ((quux ( ... pickeled object ... )))
 ;;      (eq (car quux) (cadr quux))) ;; <- evaluate this
 ;;
 ;;  => t
@@ -82,7 +85,7 @@
 ;;
 ;;    (pickel obj)
 ;;
-;;  To pickel an object to STREAM
+;;  To pickel an object to STREAM:
 ;;
 ;;    (pickel obj stream)
 ;;
@@ -94,7 +97,8 @@
 ;;
 ;;    (unpickel stream)
 ;;
-;;  Two functions are included for working directly with files:
+;;  Two functions are provided for pickeling and unpickeling to and
+;;  from files:
 ;;
 ;;    (pickel-to-file obj "/path/to/file")
 ;;
@@ -249,7 +253,7 @@ pickel-minimized-functions."
     (princ (format " %s)" sym))))
 
 (defun pickel-link-objects (obj sym)
-  "Dispatch to OBJ and SYM's apropriate link function."
+  "Dispatch to OBJ's apropriate link function."
   (typecase obj
     (cons       (pickel-link-cons       obj sym))
     (vector     (pickel-link-vector     obj sym))
