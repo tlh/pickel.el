@@ -129,8 +129,7 @@
 
 (defvar pickel-minimized-functions
   '((symbol
-     . ("(m(s)(make-symbol s))"
-        "(i(s)(intern s))"))
+     . ("(m(s)(make-symbol s))"))
     (cons
      . ("(c(a d)(cons a d))"
         "(a(c a)(setcar c a))"
@@ -237,9 +236,9 @@ were generated."
   "Print the constructor for SYM.
 If obj is interned at pickel-time, re-intern it at
 depickel-time (i). If not, make an uninterned symbol (s)."
-  (princ (format "(%s %S)"
-                 (if (intern-soft sym) "i" "m")
-                 (symbol-name sym))))
+  (princ (if (intern-soft sym)
+             (format "'%s" sym)
+           (format "(m %S)" (symbol-name sym)))))
 
 (defun pickel-print-string-constructor (str)
   "Print the constructor for STR."
