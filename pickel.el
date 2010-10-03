@@ -28,32 +28,46 @@
 ;;
 ;;  pickel is an elisp object serialization package.  It can serialize
 ;;  and deserialize most elisp objects, including any combination of
-;;  lists (conses), vectors, hash-tables, strings, integers, floats,
-;;  symbols and structs (vectors).  It can't serialize functions,
-;;  subrs (subroutines) or opaque C types like window-configurations.
+;;  lists (conses and nil), vectors, hash-tables, strings, integers,
+;;  floats, symbols and structs (vectors).  It can't serialize
+;;  functions, subrs (subroutines) or opaque C types like
+;;  window-configurations.
 ;;
-;;  pickel works by printing out elisp that evaluates to an object
-;;  "equal" to the object on which it's called.  So unpickeling an
-;;  object amounts to evaluating the pickeled object.
+;;  `pickel' works by printing to a stream a representation of the
+;;  object on which it's called.  This representation can be used by
+;;  `unpickel' to reconstruct the object.  The unpickeled object isn't
+;;  `eq' to the original, although the two are "equal" in the spirit
+;;  of `equal', in the sense that their structure and content are
+;;  `equal':
+;;
+;;    (setq foo '(bar baz))
+;;
+;;    => (bar baz)
+;;
+;;    (equal foo (unpickel-string (pickel-to-string foo)))
+;;
+;;    = t
+;;
+;;    (eq foo (unpickel-string (pickel-to-string foo)))
+;;
+;;    => nil
 ;;
 ;;  pickel correctly reconstructs cycles in the object graph.  Take
 ;;  for instance a list that points to itself:
 ;;
 ;;    (let ((foo (list nil)))
 ;;      (setcar foo foo)
-;;      foo) ;; <- evaluate this
+;;      foo)
 ;;
 ;;    => (#0)
 ;;
 ;;  In the above, the car of foo is set to foo.  Now if we pickel foo
-;;  to the current buffer, then evaluate the code it produces, we get
-;;  the same thing:
+;;  to a string, then unpickel that string, we produce an identical
+;;  self-referential cons:
 ;;
 ;;    (let ((foo '(bar)))
 ;;      (setcar foo foo)
-;;      (pickel foo (current-buffer)))
-;;
-;;    => ( ... pickled object here ... ) ;; <- evaluate this
+;;      (unpickel-string (pickel-to-string foo)))
 ;;
 ;;    => (#0)
 ;;
@@ -62,13 +76,10 @@
 ;;  subobjects of an object are `eq', they will be `eq' after
 ;;  unpickeling as well:
 ;;
-;;    (let ((foo "bar"))
-;;      (pickel (list foo foo) (current-buffer)))
-;;
-;;  => ( ... pickled object ... )
-;;
-;;    (let ((quux ( ... pickeled object ... )))
-;;      (eq (car quux) (cadr quux))) ;; <- evaluate this
+;;    (let* ((foo "bar")
+;;           (baz (unpickel-string
+;;                  (pickel-to-string (list foo foo)))))
+;;      (eq (car baz) (cadr baz)))
 ;;
 ;;  => t
 ;;
@@ -81,6 +92,8 @@
 
 ;;; Usage:
 ;;
+;;  Pickeling:
+;;
 ;;  To pickel an object to `standard-output':
 ;;
 ;;    (pickel obj)
@@ -89,20 +102,32 @@
 ;;
 ;;    (pickel obj stream)
 ;;
+;;  To pickel an object to a file:
+;;
+;;    (pickel-to-file "/path/to/file" obj)
+;;
+;;  And to pickel and object to a string:
+;;
+;;    (pickel-to-string obj)
+;;
+;;
+;;  Unpickeling will only work on objects that have been pickeled.
+;;
 ;;  To unpickel an object from `standard-input':
 ;;
 ;;    (unpickel)
 ;;
-;;  And to unpickel an object from STREAM:
+;;  To unpickel an object from STREAM:
 ;;
 ;;    (unpickel stream)
 ;;
-;;  Two functions are provided for pickeling and unpickeling to and
-;;  from files:
-;;
-;;    (pickel-to-file obj "/path/to/file")
+;;  To unpickel a file:
 ;;
 ;;    (unpickel-file "/path/to/file")
+;;
+;;  And to unpickel a string:
+;;
+;;    (unpickel-string string)
 ;;
 
 ;;; TODO:
@@ -113,7 +138,6 @@
 ;;
 
 ;;; Code:
-
 
 (require 'cl)
 
@@ -127,23 +151,6 @@
   '(integer float symbol string cons vector hash-table)
   "Types that pickel can serialize.")
 
-(defvar pickel-minimized-functions
-  '((symbol
-     . ("(m(s)(make-symbol s))"))
-    (cons
-     . ("(c(a d)(cons a d))"
-        "(a(c a)(setcar c a))"
-        "(d(c d)(setcdr c d))"))
-    (vector
-     . ("(v(l i)(make-vector l i))"
-        "(s(v i e)(aset v i e))"))
-    (hash-table
-     . ("(h(ts sz rs rt w)(make-hash-table :test ts :size sz \
-:rehash-size rs :rehash-threshold rt :weakness w))"
-        "(p(k v ht)(puthash k v ht))")))
-  "Smaller versions of object construction functions to minimize
-  pickled object size.")
-
 
 ;;; utils
 
@@ -156,12 +163,10 @@
        (maphash (lambda (,key ,val) ,@body) ,table)
        ,ret)))
 
-(defmacro pickel-wrap? (prefix suffix on &rest body)
+(defmacro pickel-wrap (prefix suffix &rest body)
   "Wrap BODY in PREFIX and SUFFIX when ON is non-nil."
   (declare (indent defun))
-  `(progn (and ,on (princ ,prefix))
-          ,@body
-          (and ,on (princ ,suffix))))
+  `(progn (princ ,prefix) ,@body (princ ,suffix)))
 
 
 ;;; generate bindings
@@ -189,23 +194,19 @@
         (setq name (concat name "1")))
       (make-symbol name))))
 
-(defun pickel-traverse-obj (obj)
+(defun pickel-generate-bindings (obj)
   "Return a list of data about OBJ, including: A hash table
 containing the symbols of all the data types used in OBJ; a hash
 table mapping unique subobjects of OBJ to symbols generated with
 `pickel-mksym' -- only objects which need special `eq' treatment
 are added; and a flag representing whether or not any bindings
 were generated."
-  (let ((bindings (make-hash-table :test 'eq))
-        (type-flags (make-hash-table)) (idx -1))
+  (let ((bindings (make-hash-table :test 'eq)) (idx -1))
     (flet ((inner
             (obj)
             (let ((type (type-of obj)))
               (unless (member type pickel-pickelable-types)
                 (error "Pickel can't serialize objects of type %s" type))
-              (if (gethash type type-flags)
-                  (incf (gethash type type-flags))
-                (puthash type 1 type-flags))
               (unless (or (pickel-no-bind-p obj) (gethash obj bindings))
                 (puthash obj (pickel-mksym (incf idx)) bindings)
                 (typecase obj
@@ -220,118 +221,110 @@ were generated."
                      (inner key)
                      (inner val))))))))
       (inner obj)
-      (list type-flags bindings (< -1 idx)))))
+      bindings)))
 
 
-;;; object construction
+;;; construct objects
 
-(defun pickel-print-constructor (obj)
+(defun pickel-construct-objects (bindings)
   "Print OBJ's constructor."
-  (etypecase obj
-    (float      (princ obj))
-    (string     (prin1 obj))
-    (cons       (princ "(c 0 0)"))
-    (vector     (princ (format "(v %s 0)" (length obj))))
-    (symbol     (princ (if (intern-soft obj)
-                           (format "'%s" obj)
-                         (format "(m %S)" (symbol-name obj)))))
-    (hash-table (princ
-                 (format "(h '%s %s %s %s %s)"
-                         (hash-table-test             obj)
-                         (hash-table-size             obj)
-                         (hash-table-rehash-size      obj)
-                         (hash-table-rehash-threshold obj)
-                         (hash-table-weakness         obj))))))
+  (pickel-wrap "(" ")"
+    (pickel-dohash (obj bind bindings)
+      (pickel-wrap (format "(%s " bind) ")"
+        (etypecase obj
+          (float      (princ obj))
+          (string     (prin1 obj))
+          (cons       (princ "(c 0 0)"))
+          (vector     (princ (format "(v %s 0)" (length obj))))
+          (symbol     (princ (if (intern-soft obj)
+                                 (format "'%s" obj)
+                               (format "(m %S)" (symbol-name obj)))))
+          (hash-table (princ
+                       (format "(h '%s %s %s %s %s)"
+                               (hash-table-test             obj)
+                               (hash-table-size             obj)
+                               (hash-table-rehash-size      obj)
+                               (hash-table-rehash-threshold obj)
+                               (hash-table-weakness         obj)))))))))
 
-(defun pickel-print-obj (obj)
-  "Print OBJ if it's an integer, its binding otherwise."
-  (princ (or (gethash obj bindings) obj)))
 
-
-;;; object linking
-
-(defun pickel-link-cons (cons bind)
-  "Set the car and cdr of BIND to the car and cdr of CONS."
-  (pickel-wrap? (format "(a %s " bind) ")" t
-    (pickel-print-obj (car cons)))
-  (pickel-wrap? (format "(d %s " bind) ")" t
-    (pickel-print-obj (cdr cons))))
-
-(defun pickel-link-vector (vec bind)
-  "Set the vector cells of BIND to the vector cells of VEC."
-  (dotimes (i (length vec))
-    (pickel-wrap? (format "(s %s %s " bind i) ")" t
-      (pickel-print-obj (aref vec i)))))
-
-(defun pickel-link-hash-table (table bind)
-  "Set the keys and vals of BIND to the keys and vals of TABLE."
-  (pickel-dohash (key val table)
-    (pickel-wrap? "(p " (format " %s)" bind) t
-      (pickel-print-obj key)
-      (princ " ")
-      (pickel-print-obj val))))
+;;; link objects
 
 (defun pickel-link-objects (bindings)
   "Dispatch to OBJ's apropriate link function."
   (pickel-dohash (obj bind bindings)
     (typecase obj
-      (cons       (pickel-link-cons       obj bind))
-      (vector     (pickel-link-vector     obj bind))
-      (hash-table (pickel-link-hash-table obj bind)))))
+      (cons
+       (pickel-wrap (format "(s %s " bind) ")"
+         (pickel-print-obj (car obj))
+         (princ " ")
+         (pickel-print-obj (cdr obj))))
+      (vector
+       (dotimes (i (length obj))
+         (pickel-wrap (format "(a %s %s " bind i) ")"
+           (pickel-print-obj (aref obj i)))))
+      (hash-table
+       (pickel-dohash (key val obj)
+         (pickel-wrap "(p " (format " %s)" bind)
+           (pickel-print-obj key)
+           (princ " ")
+           (pickel-print-obj val)))))))
 
 
-;;; pickel interface
-
-(defun pickel-message (type-flags)
-  "Message a summary from TYPE-FLAGS of the pickeling operation."
-  (let ((msg "Pickeled:\n"))
-    (pickel-dohash (type num type-flags)
-      (setq msg (concat msg (format "%15s objects of type %s.\n" num type))))
-    (message msg)))
+;;; pickel
 
 (defun pickel (obj &optional stream)
   "Pickel OBJ to STREAM or `standard-output'."
-  (let ((standard-output (or stream standard-output)))
-    (destructuring-bind (type-flags bindings binds?)
-        (pickel-traverse-obj obj)
-      (pickel-wrap? (format "(progn '%s " pickel-identifier) ")" t
-        (pickel-wrap? "(flet" ")" binds?
-          (pickel-wrap? "(" ")" binds?
-            (dolist (elt pickel-minimized-functions)
-              (when (gethash (car elt) type-flags)
-                (mapc 'princ (cdr elt)))))
-          (pickel-wrap? "(let" ")" binds?
-            (pickel-wrap? "(" ")" binds?
-              (when binds?
-                (pickel-dohash (obj bind bindings)
-                  (pickel-wrap? (format "(%s " bind) ")" t
-                    (pickel-print-constructor obj)))))
-            (pickel-link-objects bindings)
-            (pickel-print-obj obj))))
-      (pickel-message type-flags))))
+  (let ((standard-output (or stream standard-output))
+        (bindings (pickel-generate-bindings obj)))
+    (pickel-wrap (format "(%s " pickel-identifier) ")"
+      (pickel-construct-objects bindings)
+      (pickel-link-objects bindings)
+      (pickel-print-obj obj))))
 
-(defun unpickel (&optional stream)
-  "Unpickel an object from STREAM or `standard-input'.
-Errors are thrown if the stream isn't a pickeled object, or if
-there's an error evaluating the expression."
-  (let* ((stream (or stream standard-input))
-         (expr (read stream)))
-    (unless (and (consp expr) (equal `(quote ,pickel-identifier) (cadr expr)))
-      (error "Attempt to unpickel a non-pickeled stream."))
-    (condition-case err
-        (eval expr)
-      (error (error "Error unpickeling %s: %s" stream err)))))
+(defun pickel-to-string (obj)
+  (with-output-to-string (pickel obj)))
 
-(defun pickel-to-file (obj file)
+(defun pickel-to-file (file obj)
   "Pickel OBJ directly to FILE."
   (with-temp-buffer
     (pickel obj (current-buffer))
     (write-file file)))
 
+
+;;; unpickeling
+
+(defun unpickel (&optional stream)
+  "Unpickel an object from STREAM or `standard-input'.
+Errors are thrown if the stream isn't a pickeled object, or if
+there's an error evaluating the expression."
+  (let ((expr (read (or stream standard-input))))
+    (unless (and (consp expr) (eq pickel-identifier (car expr)))
+      (error "Attempt to unpickel a non-pickeled stream."))
+    (flet ((m (str) (make-symbol str))
+           (c (obj1 obj2) (cons obj1 obj2))
+           (s (cons obj1 obj2) (setcar cons obj1) (setcdr cons obj2))
+           (v (len init) (make-vector len init))
+           (a (vec idx obj) (aset vec idx obj))
+           (p (key val table) (puthash key val table))
+           (h (ts sz rs rt w)
+              (make-hash-table :test ts :size sz :rehash-size rs
+                               :rehash-threshold rt :weakness w)))
+      (condition-case err
+          (eval `(let ,(cadr expr) ,@(cddr expr)))
+        (error (error "Error unpickeling %s: %s" stream err))))))
+
 (defun unpickel-file (file)
-  "Depickel an object directly from FILE."
+  "`unpickel' an object directly from FILE."
   (with-temp-buffer
     (insert-file-contents file)
+    (goto-char (point-min))
+    (unpickel (current-buffer))))
+
+(defun unpickel-string (str)
+  "`unpickel' and object directly from STR."
+  (with-temp-buffer
+    (insert str)
     (goto-char (point-min))
     (unpickel (current-buffer))))
 
