@@ -40,22 +40,22 @@
 ;;  of `equal', in the sense that their structure and content are
 ;;  `equal':
 ;;
-;;    (setq foo '(bar baz))
+;;    (setq foo (pickel-to-string '(bar baz)))
 ;;
-;;    => (bar baz)
+;;    => "( ... pickeled foo here ... )"
 ;;
-;;    (equal foo (unpickel-string (pickel-to-string foo)))
+;;    (equal (unpickel-string foo) '(bar baz))
 ;;
-;;    = t
+;;    => t
 ;;
-;;    (eq foo (unpickel-string (pickel-to-string foo)))
+;;    (eq (unpickel-string foo) '(bar baz))
 ;;
 ;;    => nil
 ;;
 ;;  pickel correctly reconstructs cycles in the object graph.  Take
 ;;  for instance a list that points to itself:
 ;;
-;;    (let ((foo (list nil)))
+;;    (let ((foo '(nil)))
 ;;      (setcar foo foo)
 ;;      foo)
 ;;
@@ -65,7 +65,7 @@
 ;;  to a string, then unpickel that string, we produce an identical
 ;;  self-referential cons:
 ;;
-;;    (let ((foo '(bar)))
+;;    (let ((foo '(nil)))
 ;;      (setcar foo foo)
 ;;      (unpickel-string (pickel-to-string foo)))
 ;;
