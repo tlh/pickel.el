@@ -226,49 +226,85 @@ were generated."
 
 ;;; construct objects
 
+(defun pickel-construct-float (flt)
+  "Print FLT's constructor."
+  (princ flt))
+
+(defun pickel-construct-string (str)
+  "Print STR's constructor."
+  (prin1 str))
+
+(defun pickel-construct-cons (cons)
+  "Print CONS's constructor."
+  (princ "(c 0 0)"))
+
+(defun pickel-construct-vector (vec)
+  "Print VEC's constructor."
+  (princ (format "(v %s 0)" (length vec))))
+
+(defun pickel-construct-symbol (sym)
+  "Print SYM's constructor."
+  (princ (if (intern-soft sym)
+             (format "'%s" sym)
+           (format "(m %S)" (symbol-name sym)))))
+
+(defun pickel-construct-hash-table (table)
+  "Print TABLE's constructor."
+  (princ (format "(h '%s %s %s %s %s)"
+                 (hash-table-test             table)
+                 (hash-table-size             table)
+                 (hash-table-rehash-size      table)
+                 (hash-table-rehash-threshold table)
+                 (hash-table-weakness         table))))
+
 (defun pickel-construct-objects (bindings)
-  "Print OBJ's constructor."
+  "Print the constructors of all objects in BINDINGS."
   (pickel-wrap "(" ")"
     (pickel-dohash (obj bind bindings)
       (pickel-wrap (format "(%s " bind) ")"
         (etypecase obj
-          (float      (princ obj))
-          (string     (prin1 obj))
-          (cons       (princ "(c 0 0)"))
-          (vector     (princ (format "(v %s 0)" (length obj))))
-          (symbol     (princ (if (intern-soft obj)
-                                 (format "'%s" obj)
-                               (format "(m %S)" (symbol-name obj)))))
-          (hash-table (princ
-                       (format "(h '%s %s %s %s %s)"
-                               (hash-table-test             obj)
-                               (hash-table-size             obj)
-                               (hash-table-rehash-size      obj)
-                               (hash-table-rehash-threshold obj)
-                               (hash-table-weakness         obj)))))))))
+          (float      (pickel-construc-float       obj))
+          (string     (pickel-construct-string     obj))
+          (cons       (pickel-construct-cons       obj))
+          (vector     (pickel-construct-vector     obj))
+          (symbol     (pickel-construct-symbol     obj))
+          (hash-table (pickel-construct-hash-table obj)))))))
 
 
 ;;; link objects
+
+(defun pickel-print-obj (obj)
+  "Print OBJ if it's an integer, its binding otherwise."
+  (princ (or (gethash obj bindings) obj)))
+
+(defun pickel-link-cons (cons bind)
+  "Set the car and cdr of BIND to the car and cdr of CONS."
+  (pickel-wrap (format "(s %s " bind) ")"
+    (pickel-print-obj (car cons))
+    (princ " ")
+    (pickel-print-obj (cdr cons))))
+
+(defun pickel-link-vector (vec bind)
+  "Set the vector cells of BIND to the vector cells of VEC."
+  (dotimes (i (length vec))
+    (pickel-wrap (format "(a %s %s " bind i) ")"
+      (pickel-print-obj (aref vec i)))))
+
+(defun pickel-link-hash-table (table bind)
+  "Set the keys and vals of BIND to the keys and vals of TABLE."
+  (pickel-dohash (key val table)
+    (pickel-wrap "(p " (format " %s)" bind)
+      (pickel-print-obj key)
+      (princ " ")
+      (pickel-print-obj val))))
 
 (defun pickel-link-objects (bindings)
   "Dispatch to OBJ's apropriate link function."
   (pickel-dohash (obj bind bindings)
     (typecase obj
-      (cons
-       (pickel-wrap (format "(s %s " bind) ")"
-         (pickel-print-obj (car obj))
-         (princ " ")
-         (pickel-print-obj (cdr obj))))
-      (vector
-       (dotimes (i (length obj))
-         (pickel-wrap (format "(a %s %s " bind i) ")"
-           (pickel-print-obj (aref obj i)))))
-      (hash-table
-       (pickel-dohash (key val obj)
-         (pickel-wrap "(p " (format " %s)" bind)
-           (pickel-print-obj key)
-           (princ " ")
-           (pickel-print-obj val)))))))
+      (cons       (pickel-link-cons       obj bind))
+      (vector     (pickel-link-vector     obj bind))
+      (hash-table (pickel-link-hash-table obj bind)))))
 
 
 ;;; pickel
@@ -292,7 +328,7 @@ were generated."
     (write-file file)))
 
 
-;;; unpickeling
+;;; unpickel
 
 (defun unpickel (&optional stream)
   "Unpickel an object from STREAM or `standard-input'.
