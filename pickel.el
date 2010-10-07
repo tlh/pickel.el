@@ -154,6 +154,24 @@
 
 ;;; utils
 
+(defun pickel-take (lst n)
+  "Return a list of the first N elts in LST.
+Non-recursive so we don't overflow the stack."
+  (let (acc)
+    (while (and lst (> n 0))
+      (decf n)
+      (push (pop lst) acc))
+    (nreverse acc)))
+
+(defun pickel-group (lst n)
+  "Group LST into contiguous N-length sublists.
+Non-recursive so we don't overflow the stack."
+  (let (acc)
+    (while lst
+      (push (pickel-take lst n) acc)
+      (setq lst (nthcdr n lst)))
+    (nreverse acc)))
+
 (defmacro pickel-dohash (bindings &rest body)
   "Prettify maphash."
   (declare (indent defun))
@@ -236,11 +254,11 @@ were generated."
 
 (defun pickel-construct-cons (cons)
   "Print CONS's constructor."
-  (princ "(c 0 0)"))
+  (princ "(c)"))
 
 (defun pickel-construct-vector (vec)
   "Print VEC's constructor."
-  (princ (format "(v %s 0)" (length vec))))
+  (princ (format "(v %s)" (length vec))))
 
 (defun pickel-construct-symbol (sym)
   "Print SYM's constructor."
@@ -258,17 +276,19 @@ were generated."
                  (hash-table-weakness         table))))
 
 (defun pickel-construct-objects (bindings)
-  "Print the constructors of all objects in BINDINGS."
+  "Print the binds and constructors of objects in BINDINGS."
   (pickel-wrap "(" ")"
     (pickel-dohash (obj bind bindings)
-      (pickel-wrap (format "(%s " bind) ")"
-        (etypecase obj
-          (float      (pickel-construc-float       obj))
-          (string     (pickel-construct-string     obj))
-          (cons       (pickel-construct-cons       obj))
-          (vector     (pickel-construct-vector     obj))
-          (symbol     (pickel-construct-symbol     obj))
-          (hash-table (pickel-construct-hash-table obj)))))))
+      (princ bind)
+      (princ " ")
+      (etypecase obj
+        (float      (pickel-construc-float       obj))
+        (string     (pickel-construct-string     obj))
+        (cons       (pickel-construct-cons       obj))
+        (vector     (pickel-construct-vector     obj))
+        (symbol     (pickel-construct-symbol     obj))
+        (hash-table (pickel-construct-hash-table obj)))
+      (princ " "))))
 
 
 ;;; link objects
@@ -299,7 +319,7 @@ were generated."
       (pickel-print-obj val))))
 
 (defun pickel-link-objects (bindings)
-  "Dispatch to OBJ's apropriate link function."
+  "Call the link function for each object in BINDINGS."
   (pickel-dohash (obj bind bindings)
     (typecase obj
       (cons       (pickel-link-cons       obj bind))
@@ -310,7 +330,7 @@ were generated."
 ;;; pickel
 
 (defun pickel (obj &optional stream)
-  "Pickel OBJ to STREAM or `standard-output'."
+  "Serialize OBJ to STREAM or `standard-output'."
   (let ((standard-output (or stream standard-output))
         (bindings (pickel-generate-bindings obj)))
     (pickel-wrap (format "(%s " pickel-identifier) ")"
@@ -319,10 +339,11 @@ were generated."
       (pickel-print-obj obj))))
 
 (defun pickel-to-string (obj)
+  "`pickel' OBJ to a string, and return the string."
   (with-output-to-string (pickel obj)))
 
 (defun pickel-to-file (file obj)
-  "Pickel OBJ directly to FILE."
+  "`pickel' OBJ to FILE."
   (with-temp-buffer
     (pickel obj (current-buffer))
     (write-file file)))
@@ -331,23 +352,23 @@ were generated."
 ;;; unpickel
 
 (defun unpickel (&optional stream)
-  "Unpickel an object from STREAM or `standard-input'.
+  "Deserialize an object from STREAM or `standard-input'.
 Errors are thrown if the stream isn't a pickeled object, or if
 there's an error evaluating the expression."
   (let ((expr (read (or stream standard-input))))
     (unless (and (consp expr) (eq pickel-identifier (car expr)))
       (error "Attempt to unpickel a non-pickeled stream."))
     (flet ((m (str) (make-symbol str))
-           (c (obj1 obj2) (cons obj1 obj2))
+           (c () (cons nil nil))
            (s (cons obj1 obj2) (setcar cons obj1) (setcdr cons obj2))
-           (v (len init) (make-vector len init))
+           (v (len) (make-vector len nil))
            (a (vec idx obj) (aset vec idx obj))
            (p (key val table) (puthash key val table))
            (h (ts sz rs rt w)
               (make-hash-table :test ts :size sz :rehash-size rs
                                :rehash-threshold rt :weakness w)))
       (condition-case err
-          (eval `(let ,(cadr expr) ,@(cddr expr)))
+          (eval `(let ,(pickel-group (cadr expr) 2) ,@(cddr expr)))
         (error (error "Error unpickeling %s: %s" stream err))))))
 
 (defun unpickel-file (file)
