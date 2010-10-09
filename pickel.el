@@ -213,12 +213,10 @@ Non-recursive so we don't overflow the stack."
       (make-symbol name))))
 
 (defun pickel-generate-bindings (obj)
-  "Return a list of data about OBJ, including: A hash table
-containing the symbols of all the data types used in OBJ; a hash
-table mapping unique subobjects of OBJ to symbols generated with
-`pickel-mksym' -- only objects which need special `eq' treatment
-are added; and a flag representing whether or not any bindings
-were generated."
+  "Return a table mapping subobjects of OBJ to symbols.
+Only unique subobjects of OBJ for which `pickel-no-bind-p'
+returns nil are added.  Symbol bindings are generated with
+`pickel-mksym'."
   (let ((bindings (make-hash-table :test 'eq)) (idx -1))
     (flet ((inner
             (obj)
@@ -277,18 +275,19 @@ were generated."
 
 (defun pickel-construct-objects (bindings)
   "Print the binds and constructors of objects in BINDINGS."
-  (pickel-wrap "(" ")"
-    (pickel-dohash (obj bind bindings)
-      (princ bind)
-      (princ " ")
-      (etypecase obj
-        (float      (pickel-construc-float       obj))
-        (string     (pickel-construct-string     obj))
-        (cons       (pickel-construct-cons       obj))
-        (vector     (pickel-construct-vector     obj))
-        (symbol     (pickel-construct-symbol     obj))
-        (hash-table (pickel-construct-hash-table obj)))
-      (princ " "))))
+  (let ((first t))
+    (pickel-wrap "(" ")"
+      (pickel-dohash (obj bind bindings)
+        (if first (setq first nil) (princ " "))
+        (princ bind)
+        (princ " ")
+        (etypecase obj
+          (float      (pickel-construc-float       obj))
+          (string     (pickel-construct-string     obj))
+          (cons       (pickel-construct-cons       obj))
+          (vector     (pickel-construct-vector     obj))
+          (symbol     (pickel-construct-symbol     obj))
+          (hash-table (pickel-construct-hash-table obj)))))))
 
 
 ;;; link objects
