@@ -151,6 +151,12 @@
   '(integer float symbol string cons vector hash-table)
   "Types that pickel can serialize.")
 
+;; FIXME: `max-specdpl-size' shouldn't be a concern for unpickeling.
+;; Find another way to bind temp objects.
+
+(defvar pickel-max-specpdl-size 5000
+  "`max-specpdl-size' is bound to this during unpickeling.")
+
 
 ;;; utils
 
@@ -354,7 +360,8 @@ returns nil are added.  Symbol bindings are generated with
   "Deserialize an object from STREAM or `standard-input'.
 Errors are thrown if the stream isn't a pickeled object, or if
 there's an error evaluating the expression."
-  (let ((expr (read (or stream standard-input))))
+  (let ((expr (read (or stream standard-input)))
+        (max-specpdl-size pickel-max-specpdl-size))
     (unless (and (consp expr) (eq pickel-identifier (car expr)))
       (error "Attempt to unpickel a non-pickeled stream."))
     (flet ((m (str) (make-symbol str))
