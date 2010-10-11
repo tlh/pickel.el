@@ -363,8 +363,8 @@ Symbol bindings are generated with `pickel-mksym'."
                   (make-hash-table :test ts :size sz :rehash-size rs
                                    :rehash-threshold rt :weakness w))
                (getbind (sym) (gethash sym bindings)))
-          (dolist (bind (pickel-group (nth 1 expr) 2))
-            (puthash (car bind) (eval (cadr bind)) bindings))
+          (dolist (binding (pickel-group (nth 1 expr) 2))
+            (puthash (car binding) (eval (cadr binding)) bindings))
           (dolist (linker (nth 2 expr))
             (destructuring-bind (op a0 a1 a2) linker
               (case op
