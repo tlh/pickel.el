@@ -147,7 +147,7 @@
 (defvar pickel-identifier '--pickeled!--
   "Symbol that identifies a stream as a pickeled object.")
 
-(defvar pickel-pickelable-types
+(defvar pickel-types
   '(integer float symbol string cons vector hash-table)
   "Types that pickel can serialize.")
 
@@ -189,46 +189,30 @@ Non-recursive so we don't overflow the stack."
 
 ;;; generate bindings
 
-(defun pickel-mksym (idx)
-  "Return IDX as a base 52 symbol-name [a-zA-Z].
-`t' and `nil' are reserved constants and can't be used, so append
-1 to them when they come up."
-  (let ((q (/ idx 52)) (name ""))
-    (flet ((setname
-            (i) (let ((i (if (< i 26) (+ 65 i) (+ 71 i))))
-                  (setq name (concat (char-to-string i) name)))))
-      (setname (mod idx 52))
-      (while (not (zerop q))
-        (setname (mod q 52))
-        (setq q (/ q 52)))
-      (when (or (equal name "t")
-                (equal name "nil"))
-        (setq name (concat name "1")))
-      (make-symbol name))))
+(lexical-let ((idchs "0123456789abcdefghijklmnopqrstuvwxyzABCDEF\
+GHIJKLMNOPQRSTUVWXYZ~!@$%^&*|<>"))
+  (defun pickel-make-id (i)
+    "Return an id from I in base (length pickel-bindchars)."
+    (let ((base (length idchs)) id)
+      (flet ((addch () (push (aref idchs (mod i base)) id)
+                    (setq i (/ i base))))
+        (addch) (while (> i 0) (addch))
+        (map 'string 'identity id)))))
 
 (defun pickel-generate-bindings (obj)
-  "Return a table mapping subobjects of OBJ to symbols.
-Symbol bindings are generated with `pickel-mksym'."
-  (let ((bindings (make-hash-table :test 'eq)) (idx -1))
-    (flet ((inner
+  "Return a table mapping subobjects of OBJ to ids."
+  (let ((bindings (make-hash-table :test 'eq)) (i -1))
+    (flet ((bind
             (obj)
-            (let ((type (type-of obj)))
-              (unless (member type pickel-pickelable-types)
-                (error "Pickel can't serialize objects of type %s" type))
-              (unless (gethash obj bindings)
-                (puthash obj (pickel-mksym (incf idx)) bindings)
-                (typecase obj
-                  (cons
-                   (inner (car obj))
-                   (inner (cdr obj)))
-                  (vector
-                   (dotimes (i (length obj))
-                     (inner (aref obj i))))
-                  (hash-table
-                   (pickel-dohash (key val obj)
-                     (inner key)
-                     (inner val))))))))
-      (inner obj)
+            (unless (memq (type-of obj) pickel-types)
+              (error "Can't pickel type: %s" (type-of obj)))
+            (unless (gethash obj bindings)
+              (puthash obj (pickel-make-id (incf i)) bindings)
+              (typecase obj
+                (cons       (bind (car obj)) (bind (cdr obj)))
+                (vector     (map nil 'bind obj))
+                (hash-table (pickel-dohash (k v obj) (bind k) (bind v)))))))
+      (bind obj)
       bindings)))
 
 
@@ -366,8 +350,8 @@ Symbol bindings are generated with `pickel-mksym'."
           (dolist (binding (pickel-group (nth 1 expr) 2))
             (puthash (car binding) (eval (cadr binding)) bindings))
           (dolist (linker (nth 2 expr))
-            (destructuring-bind (op a0 a1 a2) linker
-              (case op
+            (destructuring-bind (fn a0 a1 a2) linker
+              (case fn
                 (a (aset (getbind a0) a1 (getbind a2)))
                 (p (puthash (getbind a1) (getbind a2) (getbind a0)))
                 (s (let ((c (getbind a0)))
