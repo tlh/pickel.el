@@ -350,30 +350,30 @@ Symbol bindings are generated with `pickel-mksym'."
 ;;; unpickel
 
 (defun unpickel (&optional stream)
-  "Deserialize an object from STREAM or `standard-input'.
-Errors are thrown if the stream isn't a pickeled object, or if
-there's an error evaluating the expression."
-  (let ((bindings (make-hash-table))
-        (expr (read (or stream standard-input))))
+  "Deserialize an object from STREAM or `standard-input'."
+  (let ((expr (read (or stream standard-input)))
+        (bindings (make-hash-table)))
     (unless (and (consp expr) (eq (car expr) pickel-identifier))
       (error "Attempt to unpickel a non-pickeled stream."))
     (condition-case err
         (flet ((m (str) (make-symbol str))
                (c () (cons nil nil))
                (v (len) (make-vector len nil))
-               (g (sym) (gethash sym bindings))
                (h (ts sz rs rt w)
                   (make-hash-table :test ts :size sz :rehash-size rs
-                                   :rehash-threshold rt :weakness w)))
+                                   :rehash-threshold rt :weakness w))
+               (getbind (sym) (gethash sym bindings)))
           (dolist (bind (pickel-group (nth 1 expr) 2))
             (puthash (car bind) (eval (cadr bind)) bindings))
-          (dolist (link (nth 2 expr))
-            (destructuring-bind (op a0 a1 a2) link
+          (dolist (linker (nth 2 expr))
+            (destructuring-bind (op a0 a1 a2) linker
               (case op
-                (s (let ((c (g a0))) (setcar c (g a1)) (setcdr c (g a2))))
-                (a (let ((v (g a0))) (aset c a1 (g a2))))
-                (p (let ((h (g a0))) (puthash (g a1) (g a2) h))))))
-          (g (nth 3 expr)))
+                (a (aset (getbind a0) a1 (getbind a2)))
+                (p (puthash (getbind a1) (getbind a2) (getbind a0)))
+                (s (let ((c (getbind a0)))
+                     (setcar c (getbind a1))
+                     (setcdr c (getbind a2)))))))
+          (getbind (nth 3 expr)))
       (error (error "Error unpickeling %s: %s" stream err)))))
 
 (defun unpickel-file (file)
