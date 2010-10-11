@@ -151,12 +151,6 @@
   '(integer float symbol string cons vector hash-table)
   "Types that pickel can serialize.")
 
-;; FIXME: `max-specdpl-size' shouldn't be a concern for unpickeling.
-;; Find another way to bind temp objects.
-
-(defvar pickel-max-specpdl-size 5000
-  "`max-specpdl-size' is bound to this during unpickeling.")
-
 
 ;;; utils
 
@@ -195,12 +189,6 @@ Non-recursive so we don't overflow the stack."
 
 ;;; generate bindings
 
-(defun pickel-no-bind-p (obj)
-  "Return t for objects that shouldn't get a binding."
-  (or (eq obj t)
-      (eq obj nil)
-      (integerp obj)))
-
 (defun pickel-mksym (idx)
   "Return IDX as a base 52 symbol-name [a-zA-Z].
 `t' and `nil' are reserved constants and can't be used, so append
@@ -220,16 +208,14 @@ Non-recursive so we don't overflow the stack."
 
 (defun pickel-generate-bindings (obj)
   "Return a table mapping subobjects of OBJ to symbols.
-Only unique subobjects of OBJ for which `pickel-no-bind-p'
-returns nil are added.  Symbol bindings are generated with
-`pickel-mksym'."
+Symbol bindings are generated with `pickel-mksym'."
   (let ((bindings (make-hash-table :test 'eq)) (idx -1))
     (flet ((inner
             (obj)
             (let ((type (type-of obj)))
               (unless (member type pickel-pickelable-types)
                 (error "Pickel can't serialize objects of type %s" type))
-              (unless (or (pickel-no-bind-p obj) (gethash obj bindings))
+              (unless (gethash obj bindings)
                 (puthash obj (pickel-mksym (incf idx)) bindings)
                 (typecase obj
                   (cons
@@ -247,6 +233,10 @@ returns nil are added.  Symbol bindings are generated with
 
 
 ;;; construct objects
+
+(defun pickel-construct-integer (int)
+  "Print INT's constructor."
+  (princ int))
 
 (defun pickel-construct-float (flt)
   "Print FLT's constructor."
@@ -266,9 +256,10 @@ returns nil are added.  Symbol bindings are generated with
 
 (defun pickel-construct-symbol (sym)
   "Print SYM's constructor."
-  (princ (if (intern-soft sym)
-             (format "'%s" sym)
-           (format "(m %S)" (symbol-name sym)))))
+  (princ (cond ((eq sym nil) "nil")
+               ((eq sym t) "t")
+               ((intern-soft sym) (format "'%s" sym))
+               (t (format "(m \"%s\")" sym)))))
 
 (defun pickel-construct-hash-table (table)
   "Print TABLE's constructor."
@@ -288,7 +279,8 @@ returns nil are added.  Symbol bindings are generated with
         (princ bind)
         (princ " ")
         (etypecase obj
-          (float      (pickel-construc-float       obj))
+          (integer    (pickel-construct-integer    obj))
+          (float      (pickel-construct-float      obj))
           (string     (pickel-construct-string     obj))
           (cons       (pickel-construct-cons       obj))
           (vector     (pickel-construct-vector     obj))
@@ -298,38 +290,39 @@ returns nil are added.  Symbol bindings are generated with
 
 ;;; link objects
 
-(defun pickel-print-obj (obj)
-  "Print OBJ if it's an integer, its binding otherwise."
-  (princ (or (gethash obj bindings) obj)))
+(defun pickel-princer (obj)
+  "princ OBJ's binding."
+  (princ (gethash obj bindings)))
 
 (defun pickel-link-cons (cons bind)
   "Set the car and cdr of BIND to the car and cdr of CONS."
   (pickel-wrap (format "(s %s " bind) ")"
-    (pickel-print-obj (car cons))
+    (pickel-princer (car cons))
     (princ " ")
-    (pickel-print-obj (cdr cons))))
+    (pickel-princer (cdr cons))))
 
 (defun pickel-link-vector (vec bind)
   "Set the vector cells of BIND to the vector cells of VEC."
   (dotimes (i (length vec))
     (pickel-wrap (format "(a %s %s " bind i) ")"
-      (pickel-print-obj (aref vec i)))))
+      (pickel-princer (aref vec i)))))
 
 (defun pickel-link-hash-table (table bind)
   "Set the keys and vals of BIND to the keys and vals of TABLE."
   (pickel-dohash (key val table)
-    (pickel-wrap "(p " (format " %s)" bind)
-      (pickel-print-obj key)
+    (pickel-wrap (format "(p %s " bind) ")"
+      (pickel-princer key)
       (princ " ")
-      (pickel-print-obj val))))
+      (pickel-princer val))))
 
 (defun pickel-link-objects (bindings)
   "Call the link function for each object in BINDINGS."
-  (pickel-dohash (obj bind bindings)
-    (typecase obj
-      (cons       (pickel-link-cons       obj bind))
-      (vector     (pickel-link-vector     obj bind))
-      (hash-table (pickel-link-hash-table obj bind)))))
+  (pickel-wrap "(" ")"
+    (pickel-dohash (obj bind bindings)
+      (typecase obj
+        (cons       (pickel-link-cons       obj bind))
+        (vector     (pickel-link-vector     obj bind))
+        (hash-table (pickel-link-hash-table obj bind))))))
 
 
 ;;; pickel
@@ -341,7 +334,7 @@ returns nil are added.  Symbol bindings are generated with
     (pickel-wrap (format "(%s " pickel-identifier) ")"
       (pickel-construct-objects bindings)
       (pickel-link-objects bindings)
-      (pickel-print-obj obj))))
+      (pickel-princer obj))))
 
 (defun pickel-to-string (obj)
   "`pickel' OBJ to a string, and return the string."
@@ -360,22 +353,28 @@ returns nil are added.  Symbol bindings are generated with
   "Deserialize an object from STREAM or `standard-input'.
 Errors are thrown if the stream isn't a pickeled object, or if
 there's an error evaluating the expression."
-  (let ((expr (read (or stream standard-input)))
-        (max-specpdl-size pickel-max-specpdl-size))
-    (unless (and (consp expr) (eq pickel-identifier (car expr)))
+  (let ((bindings (make-hash-table))
+        (expr (read (or stream standard-input))))
+    (unless (and (consp expr) (eq (car expr) pickel-identifier))
       (error "Attempt to unpickel a non-pickeled stream."))
-    (flet ((m (str) (make-symbol str))
-           (c () (cons nil nil))
-           (s (cons obj1 obj2) (setcar cons obj1) (setcdr cons obj2))
-           (v (len) (make-vector len nil))
-           (a (vec idx obj) (aset vec idx obj))
-           (p (key val table) (puthash key val table))
-           (h (ts sz rs rt w)
-              (make-hash-table :test ts :size sz :rehash-size rs
-                               :rehash-threshold rt :weakness w)))
-      (condition-case err
-          (eval `(let ,(pickel-group (cadr expr) 2) ,@(cddr expr)))
-        (error (error "Error unpickeling %s: %s" stream err))))))
+    (condition-case err
+        (flet ((m (str) (make-symbol str))
+               (c () (cons nil nil))
+               (v (len) (make-vector len nil))
+               (g (sym) (gethash sym bindings))
+               (h (ts sz rs rt w)
+                  (make-hash-table :test ts :size sz :rehash-size rs
+                                   :rehash-threshold rt :weakness w)))
+          (dolist (bind (pickel-group (nth 1 expr) 2))
+            (puthash (car bind) (eval (cadr bind)) bindings))
+          (dolist (link (nth 2 expr))
+            (destructuring-bind (op a0 a1 a2) link
+              (case op
+                (s (let ((c (g a0))) (setcar c (g a1)) (setcdr c (g a2))))
+                (a (let ((v (g a0))) (aset c a1 (g a2))))
+                (p (let ((h (g a0))) (puthash (g a1) (g a2) h))))))
+          (g (nth 3 expr)))
+      (error (error "Error unpickeling %s: %s" stream err)))))
 
 (defun unpickel-file (file)
   "`unpickel' an object directly from FILE."
