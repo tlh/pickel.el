@@ -33,12 +33,12 @@
 ;;  functions, subrs (subroutines) or opaque C types like
 ;;  window-configurations.
 ;;
-;;  `pickel' works by printing to a stream a representation of the
-;;  object on which it's called.  This representation can be used by
-;;  `unpickel' to reconstruct the object.  The unpickeled object isn't
-;;  `eq' to the original, although the two are "equal" in the spirit
-;;  of `equal', in the sense that their structure and content are
-;;  `equal':
+;;  `pickel' works by printing to a stream a set of coded
+;;  instructions, which can be used by `unpickel' to recreate the
+;;  original object.  The unpickeled object isn't `eq' to the
+;;  original, although the two are "equal" in the spirit of `equal',
+;;  in the sense that their structure and content are equal.  For
+;;  example:
 ;;
 ;;    (setq foo (pickel-to-string '(bar baz)))
 ;;
@@ -71,8 +71,8 @@
 ;;
 ;;    => (#0)
 ;;
-;;  Pickel also correctly deals with `eq' subobjects, including
-;;  floats, strings, symbols and the collection types.  When two
+;;  Pickel also correctly recreates `eq' subobjects, including
+;;  strings, symbols, floats and the collection types.  When two
 ;;  subobjects of an object are `eq', they will be `eq' after
 ;;  unpickeling as well:
 ;;
@@ -145,18 +145,18 @@
 ;;; defvars
 
 (defvar pickel-identifier '~pickel!~
-  "Symbol that identifies a stream as a pickeled object.")
+  "Symbol identifying a stream as a pickel.")
 
 (defvar pickel-types
   '(integer float symbol string cons vector hash-table)
-  "Types that pickel can serialize.")
+  "Types pickel can serialize.")
 
 
 ;;; utils
 
 (defun pickel-take (lst n)
   "Return a list of the first N elts in LST.
-Non-recursive so we don't overflow the stack."
+Iterative to avoid stack overflow."
   (let (acc)
     (while (and lst (> n 0))
       (decf n)
@@ -165,7 +165,7 @@ Non-recursive so we don't overflow the stack."
 
 (defun pickel-group (lst n)
   "Group LST into contiguous N-length sublists.
-Non-recursive so we don't overflow the stack."
+Iterative to avoid stack overflow."
   (let (acc)
     (while lst
       (push (pickel-take lst n) acc)
@@ -173,7 +173,7 @@ Non-recursive so we don't overflow the stack."
     (nreverse acc)))
 
 (defmacro pickel-dohash (bindings &rest body)
-  "Prettify maphash."
+  "do-style wrapper for maphash."
   (declare (indent defun))
   (destructuring-bind (key val table &optional ret)
       bindings
@@ -182,7 +182,7 @@ Non-recursive so we don't overflow the stack."
        ,ret)))
 
 (defmacro pickel-wrap (prefix suffix &rest body)
-  "Wrap BODY in PREFIX and SUFFIX when ON is non-nil."
+  "Wrap BODY in PREFIX and SUFFIX princers."
   (declare (indent defun))
   `(progn (princ ,prefix) ,@body (princ ,suffix)))
 
@@ -190,7 +190,7 @@ Non-recursive so we don't overflow the stack."
 ;;; generate bindings
 
 (lexical-let ((idchs "0123456789abcdefghijklmnopqrstuvwxyzABCDEF\
-GHIJKLMNOPQRSTUVWXYZ~!@$%^&*|<>"))
+GHIJKLMNOPQRSTUVWXYZ~!@$%^&*|<>-_=+/:"))
   (defun pickel-gid (i)
     "Return an id from I in base (length idchs)."
     (let ((base (length idchs)) id)
@@ -200,7 +200,7 @@ GHIJKLMNOPQRSTUVWXYZ~!@$%^&*|<>"))
         (map 'string 'identity id)))))
 
 (defun pickel-generate-bindings (obj)
-  "Return a hash-table mapping subobjects of OBJ to IDs."
+  "Return a hash-table mapping subobjects of OBJ to GIDs."
   (let ((binds (make-hash-table :test 'eq)) (i -1))
     (flet ((bind
             (obj)
@@ -225,7 +225,7 @@ GHIJKLMNOPQRSTUVWXYZ~!@$%^&*|<>"))
 ;;; create objects
 
 (defun pickel-create-objects ()
-  "Print the id's and creators of all objects in BINDINGS."
+  "Print the IDs and creators of all objects in BINDINGS."
   (pickel-wrap "(" ")"
     (pickel-dohash (obj id bindings)
       (princ
@@ -252,7 +252,7 @@ GHIJKLMNOPQRSTUVWXYZ~!@$%^&*|<>"))
 ;;; set objects
 
 (defun pickel-set-objects ()
-  "Print set instructions for all objects in BINDINGS."
+  "Print set instructions for collection objects in BINDINGS."
   (flet ((id (obj) (gethash obj bindings))
          (set (op a b c)
               (princ (format "%s %s %s %s "
