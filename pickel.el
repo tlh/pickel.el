@@ -144,7 +144,7 @@
 
 ;;; defvars
 
-(defvar pickel-identifier '--pickeled!--
+(defvar pickel-identifier '~pickel!~
   "Symbol that identifies a stream as a pickeled object.")
 
 (defvar pickel-types
@@ -191,8 +191,8 @@ Non-recursive so we don't overflow the stack."
 
 (lexical-let ((idchs "0123456789abcdefghijklmnopqrstuvwxyzABCDEF\
 GHIJKLMNOPQRSTUVWXYZ~!@$%^&*|<>"))
-  (defun pickel-make-id (i)
-    "Return an id from I in base (length pickel-bindchars)."
+  (defun pickel-gid (i)
+    "Return an id from I in base (length idchs)."
     (let ((base (length idchs)) id)
       (flet ((addch () (push (aref idchs (mod i base)) id)
                     (setq i (/ i base))))
@@ -200,53 +200,39 @@ GHIJKLMNOPQRSTUVWXYZ~!@$%^&*|<>"))
         (map 'string 'identity id)))))
 
 (defun pickel-generate-bindings (obj)
-  "Return a table mapping subobjects of OBJ to ids."
-  (let ((bindings (make-hash-table :test 'eq)) (i -1))
+  "Return a hash-table mapping subobjects of OBJ to IDs."
+  (let ((binds (make-hash-table :test 'eq)) (i -1))
     (flet ((bind
             (obj)
-            (unless (memq (type-of obj) pickel-types)
-              (error "Can't pickel type: %s" (type-of obj)))
-            (unless (gethash obj bindings)
-              (puthash obj (pickel-make-id (incf i)) bindings)
-              (typecase obj
-                (cons       (bind (car obj)) (bind (cdr obj)))
-                (vector     (map nil 'bind obj))
-                (hash-table (pickel-dohash (k v obj) (bind k) (bind v)))))))
-      (bind obj)
-      bindings)))
+            (let ((type (type-of obj)))
+              (unless (memq type pickel-types)
+                (error "Can't pickel type: %s" type))
+              (unless (gethash obj binds)
+                (puthash obj (pickel-gid (incf i)) binds)
+                (case type
+                  (cons
+                   (bind (car obj)) (bind (cdr obj)))
+                  (vector
+                   (dotimes (j (length obj))
+                     (bind j) (bind (aref obj j))))
+                  (hash-table
+                   (pickel-dohash (k v obj)
+                     (bind k) (bind v)))))
+              binds)))
+      (bind obj))))
 
 
-;;; construct objects
+;;; create objects
 
-(defun pickel-construct-integer (int)
-  "Print INT's constructor."
-  (princ int))
-
-(defun pickel-construct-float (flt)
-  "Print FLT's constructor."
-  (princ flt))
-
-(defun pickel-construct-string (str)
-  "Print STR's constructor."
-  (prin1 str))
-
-(defun pickel-construct-cons (cons)
-  "Print CONS's constructor."
-  (princ "(c)"))
-
-(defun pickel-construct-vector (vec)
-  "Print VEC's constructor."
-  (princ (format "(v %s)" (length vec))))
-
-(defun pickel-construct-symbol (sym)
-  "Print SYM's constructor."
+(defun pickel-create-symbol (sym)
+  "Create SYM."
   (princ (cond ((eq sym nil) "nil")
                ((eq sym t) "t")
                ((intern-soft sym) (format "'%s" sym))
                (t (format "(m \"%s\")" sym)))))
 
-(defun pickel-construct-hash-table (table)
-  "Print TABLE's constructor."
+(defun pickel-create-hash-table (table)
+  "Create TABLE."
   (princ (format "(h '%s %s %s %s %s)"
                  (hash-table-test             table)
                  (hash-table-size             table)
@@ -254,59 +240,41 @@ GHIJKLMNOPQRSTUVWXYZ~!@$%^&*|<>"))
                  (hash-table-rehash-threshold table)
                  (hash-table-weakness         table))))
 
-(defun pickel-construct-objects (bindings)
-  "Print the binds and constructors of objects in BINDINGS."
+(defun pickel-create-objects ()
+  "Print the id's and creators of all objects in BINDINGS."
   (let ((first t))
     (pickel-wrap "(" ")"
-      (pickel-dohash (obj bind bindings)
+      (pickel-dohash (obj id bindings)
         (if first (setq first nil) (princ " "))
-        (princ bind)
+        (princ id)
         (princ " ")
         (etypecase obj
-          (integer    (pickel-construct-integer    obj))
-          (float      (pickel-construct-float      obj))
-          (string     (pickel-construct-string     obj))
-          (cons       (pickel-construct-cons       obj))
-          (vector     (pickel-construct-vector     obj))
-          (symbol     (pickel-construct-symbol     obj))
-          (hash-table (pickel-construct-hash-table obj)))))))
+          (integer    (princ obj))
+          (float      (princ obj))
+          (string     (prin1 obj))
+          (cons       (princ "(c)"))
+          (vector     (princ (format "(v %s)" (length obj))))
+          (symbol     (pickel-create-symbol obj))
+          (hash-table (pickel-create-hash-table obj)))))))
 
 
-;;; link objects
+;;; set objects
 
-(defun pickel-princer (obj)
-  "princ OBJ's binding."
-  (princ (gethash obj bindings)))
-
-(defun pickel-link-cons (cons bind)
-  "Set the car and cdr of BIND to the car and cdr of CONS."
-  (pickel-wrap (format "(s %s " bind) ")"
-    (pickel-princer (car cons))
-    (princ " ")
-    (pickel-princer (cdr cons))))
-
-(defun pickel-link-vector (vec bind)
-  "Set the vector cells of BIND to the vector cells of VEC."
-  (dotimes (i (length vec))
-    (pickel-wrap (format "(a %s %s " bind i) ")"
-      (pickel-princer (aref vec i)))))
-
-(defun pickel-link-hash-table (table bind)
-  "Set the keys and vals of BIND to the keys and vals of TABLE."
-  (pickel-dohash (key val table)
-    (pickel-wrap (format "(p %s " bind) ")"
-      (pickel-princer key)
-      (princ " ")
-      (pickel-princer val))))
-
-(defun pickel-link-objects (bindings)
-  "Call the link function for each object in BINDINGS."
-  (pickel-wrap "(" ")"
-    (pickel-dohash (obj bind bindings)
-      (typecase obj
-        (cons       (pickel-link-cons       obj bind))
-        (vector     (pickel-link-vector     obj bind))
-        (hash-table (pickel-link-hash-table obj bind))))))
+(defun pickel-set-objects ()
+  "Print set instructions for all objects in BINDINGS."
+  (flet ((id (obj) (gethash obj bindings))
+         (set (op a b c)
+              (princ (format "%s %s %s %s "
+                             op (id a) (id b) (id c)))))
+    (pickel-wrap "(" ")"
+      (pickel-dohash (obj id bindings)
+        (typecase obj
+          (cons
+           (set 's obj (car obj) (cdr obj)))
+          (vector
+           (dotimes (i (length obj)) (set 'a obj i (aref obj i))))
+          (hash-table
+           (pickel-dohash (k v obj) (set 'p k v obj))))))))
 
 
 ;;; pickel
@@ -315,10 +283,11 @@ GHIJKLMNOPQRSTUVWXYZ~!@$%^&*|<>"))
   "Serialize OBJ to STREAM or `standard-output'."
   (let ((standard-output (or stream standard-output))
         (bindings (pickel-generate-bindings obj)))
-    (pickel-wrap (format "(%s " pickel-identifier) ")"
-      (pickel-construct-objects bindings)
-      (pickel-link-objects bindings)
-      (pickel-princer obj))))
+    (pickel-wrap "(" ")"
+      (princ pickel-identifier)
+      (pickel-create-objects)
+      (pickel-set-objects)
+      (princ (gethash obj bindings)))))
 
 (defun pickel-to-string (obj)
   "`pickel' OBJ to a string, and return the string."
@@ -335,9 +304,9 @@ GHIJKLMNOPQRSTUVWXYZ~!@$%^&*|<>"))
 
 (defun unpickel (&optional stream)
   "Deserialize an object from STREAM or `standard-input'."
-  (let ((expr (read (or stream standard-input)))
+  (let ((pickel (read (or stream standard-input)))
         (bindings (make-hash-table)))
-    (unless (and (consp expr) (eq (car expr) pickel-identifier))
+    (unless (and (consp pickel) (eq (car pickel) pickel-identifier))
       (error "Attempt to unpickel a non-pickeled stream."))
     (condition-case err
         (flet ((m (str) (make-symbol str))
@@ -346,18 +315,14 @@ GHIJKLMNOPQRSTUVWXYZ~!@$%^&*|<>"))
                (h (ts sz rs rt w)
                   (make-hash-table :test ts :size sz :rehash-size rs
                                    :rehash-threshold rt :weakness w))
-               (getbind (sym) (gethash sym bindings)))
-          (dolist (binding (pickel-group (nth 1 expr) 2))
-            (puthash (car binding) (eval (cadr binding)) bindings))
-          (dolist (linker (nth 2 expr))
-            (destructuring-bind (fn a0 a1 a2) linker
-              (case fn
-                (a (aset (getbind a0) a1 (getbind a2)))
-                (p (puthash (getbind a1) (getbind a2) (getbind a0)))
-                (s (let ((c (getbind a0)))
-                     (setcar c (getbind a1))
-                     (setcdr c (getbind a2)))))))
-          (getbind (nth 3 expr)))
+               (setcons (cons a d) (setcar cons a) (setcdr cons d))
+               (getbind (id) (gethash id bindings)))
+          (dolist (elt (pickel-group (nth 1 pickel) 2))
+            (puthash (car elt) (eval (cadr elt)) bindings))
+          (dolist (elt (pickel-group (nth 2 pickel) 4))
+            (apply (case (car elt) (a 'aset) (p 'puthash) (s 'setcons))
+                   (mapcar 'getbind (cdr elt))))
+          (getbind (nth 3 pickel)))
       (error (error "Error unpickeling %s: %s" stream err)))))
 
 (defun unpickel-file (file)
