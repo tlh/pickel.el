@@ -151,6 +151,12 @@
   '(integer float symbol string cons vector hash-table)
   "Types pickel can serialize.")
 
+(defvar pickel-idchs "0123456789\
+abcdefghijklmnopqrstuvwxyz\
+ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+~!@$%^&*|<>-_=+/:"
+  "Chars used in pickel gids.")
+
 
 ;;; utils
 
@@ -189,15 +195,13 @@ Iterative to avoid stack overflow."
 
 ;;; generate bindings
 
-(lexical-let ((idchs "0123456789abcdefghijklmnopqrstuvwxyzABCDEF\
-GHIJKLMNOPQRSTUVWXYZ~!@$%^&*|<>-_=+/:"))
-  (defun pickel-gid (i)
-    "Return an id from I in base (length idchs)."
-    (let ((base (length idchs)) id)
-      (flet ((addch () (push (aref idchs (mod i base)) id)
-                    (setq i (/ i base))))
-        (addch) (while (> i 0) (addch))
-        (map 'string 'identity id)))))
+(defun pickel-gid (i)
+  "Return an id from I in base (length idchs)."
+  (let ((base (length pickel-idchs)) id)
+    (flet ((addch () (push (aref pickel-idchs (mod i base)) id)
+                  (setq i (/ i base))))
+      (addch) (while (> i 0) (addch))
+      (map 'string 'identity id))))
 
 (defun pickel-generate-bindings (obj)
   "Return a hash-table mapping subobjects of OBJ to GIDs."
@@ -232,21 +236,23 @@ GHIJKLMNOPQRSTUVWXYZ~!@$%^&*|<>-_=+/:"))
        (format
         "%s %s " id
         (etypecase obj
-          (integer    obj)
-          (float      obj)
-          (string     (format "%S" obj))
-          (cons       "(c)")
-          (vector     (format "(v %s)" (length obj)))
-          (symbol     (cond ((eq obj nil) "nil")
-                            ((eq obj t)   "t")
-                            ((intern-soft obj) (format "'%s" obj))
-                            (t (format "(m %S)" (symbol-name obj)))))
-          (hash-table (format "(h '%s %s %s %s %s)"
-                              (hash-table-test             obj)
-                              (hash-table-size             obj)
-                              (hash-table-rehash-size      obj)
-                              (hash-table-rehash-threshold obj)
-                              (hash-table-weakness         obj)))))))))
+          (integer     obj)
+          (float       obj)
+          (string      (format "%S" obj))
+          (cons        "(c)")
+          (vector      (format "(v %s)" (length obj)))
+          (symbol      (cond
+                        ((eq obj nil) "nil")
+                        ((eq obj t)   "t")
+                        ((intern-soft obj) (format "'%s" obj))
+                        (t (format "(m %S)" (symbol-name obj)))))
+          (hash-table  (format
+                        "(h '%s %s %s %s %s)"
+                        (hash-table-test             obj)
+                        (hash-table-size             obj)
+                        (hash-table-rehash-size      obj)
+                        (hash-table-rehash-threshold obj)
+                        (hash-table-weakness         obj)))))))))
 
 
 ;;; set objects
