@@ -178,14 +178,11 @@ Iterative to avoid stack overflow."
       (setq lst (nthcdr n lst)))
     (nreverse acc)))
 
-(defmacro pickel-dohash (bindings &rest body)
-  "do-style wrapper for maphash."
-  (declare (indent defun))
-  (destructuring-bind (key val table &optional ret)
-      bindings
-    `(progn
-       (maphash (lambda (,key ,val) ,@body) ,table)
-       ,ret)))
+(defmacro pickel-dohash (spec &rest body)
+  "do-style wrapper for `maphash'."
+  (declare (indent 1))
+  (destructuring-bind (key val table &optional return) spec
+    `(progn (maphash (lambda (,key ,val) ,@body) ,table) ,return)))
 
 (defmacro pickel-wrap (prefix suffix &rest body)
   "Wrap BODY in PREFIX and SUFFIX princers."
@@ -198,9 +195,11 @@ Iterative to avoid stack overflow."
 (defun pickel-gid (i)
   "Return an id from I in base (length idchs)."
   (let ((base (length pickel-idchs)) id)
-    (flet ((addch () (push (aref pickel-idchs (mod i base)) id)
+    (flet ((addch ()
+                  (push (aref pickel-idchs (mod i base)) id)
                   (setq i (/ i base))))
-      (addch) (while (> i 0) (addch))
+      (addch)
+      (while (> i 0) (addch))
       (map 'string 'identity id))))
 
 (defun pickel-generate-bindings (obj)
